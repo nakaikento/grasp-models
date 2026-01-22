@@ -1,0 +1,15 @@
+# Data Processing
+sentencepiece>=0.1.99
+
+# Training (AWS)
+torch>=2.0
+transformers>=4.30
+datasets>=2.14
+accelerate>=0.21
+
+# Export
+onnx>=1.14
+onnxruntime>=1.15
+
+# Evaluation
+sacrebleu>=2.3

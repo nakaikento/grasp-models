@@ -1,0 +1,43 @@
+# Data files (large)
+data/raw/*.ja
+data/raw/*.ko
+data/cleaned/
+data/tokenized/
+
+# Models
+models/
+*.model
+*.onnx
+*.bin
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temp
+*.tmp
+*.temp
