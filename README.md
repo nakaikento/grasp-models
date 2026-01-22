@@ -124,4 +124,4 @@ onnxruntime >= 1.15
 
 ## ライセンス
 
-MIT License
+[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) - Non-commercial use only.
