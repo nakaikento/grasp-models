@@ -1,0 +1,431 @@
+#!/usr/bin/env python3
+"""
+MarianMT 学習スクリプト
+
+Knowledge Distillation: 日本語 → 教師韓国語 で学習
+
+Usage:
+    python training/train.py
+    python training/train.py --use-opus-target  # OPUS韓国語をターゲットに（比較用）
+
+Input:
+    data/splits/train.ja
+    data/teacher/train.ko (教師翻訳) or data/splits/train.ko (OPUS)
+Output:
+    models/ja-ko/
+"""
+
+import os
+import numpy as np
+import torch
+from pathlib import Path
+from dataclasses import dataclass, field
+from typing import Optional, Dict, List
+import argparse
+
+from datasets import Dataset, DatasetDict
+from transformers import (
+    MarianConfig,
+    MarianMTModel,
+    MarianTokenizer,
+    PreTrainedTokenizerFast,
+    Seq2SeqTrainer,
+    Seq2SeqTrainingArguments,
+    EarlyStoppingCallback,
+    DataCollatorForSeq2Seq,
+)
+import sentencepiece as spm
+import evaluate
+
+# 設定をインポート
+import sys
+sys.path.append(str(Path(__file__).parent.parent))
+from training.config import ModelConfig, TrainingConfig
+
+
+class SPMTokenizer:
+    """SentencePieceベースのトークナイザー（MarianMT互換）"""
+    
+    def __init__(self, model_path: str):
+        self.sp = spm.SentencePieceProcessor()
+        self.sp.load(model_path)
+        
+        self.pad_token_id = 0
+        self.unk_token_id = 1
+        self.bos_token_id = 2
+        self.eos_token_id = 3
+        
+        self.pad_token = "<pad>"
+        self.unk_token = "<unk>"
+        self.bos_token = "<s>"
+        self.eos_token = "</s>"
+        
+        self.vocab_size = self.sp.get_piece_size()
+
+        self.padding_side = "right"
+    
+    def __call__(self, texts, **kwargs):
+        """HuggingFace互換のエンコード"""
+        if isinstance(texts, str):
+            texts = [texts]
+        
+        max_length = kwargs.get('max_length', 512)
+        padding = kwargs.get('padding', False)
+        truncation = kwargs.get('truncation', False)
+        return_tensors = kwargs.get('return_tensors', None)
+        
+        input_ids = []
+        attention_mask = []
+        
+        for text in texts:
+            ids = self.sp.encode_as_ids(text)
+            
+            # EOS追加
+            ids = ids + [self.eos_token_id]
+            
+            # Truncation
+            if truncation and len(ids) > max_length:
+                ids = ids[:max_length]
+            
+            mask = [1] * len(ids)
+            input_ids.append(ids)
+            attention_mask.append(mask)
+        
+        # Padding
+        if padding:
+            max_len = max(len(ids) for ids in input_ids)
+            for i in range(len(input_ids)):
+                pad_len = max_len - len(input_ids[i])
+                input_ids[i] = input_ids[i] + [self.pad_token_id] * pad_len
+                attention_mask[i] = attention_mask[i] + [0] * pad_len
+        
+        result = {
+            'input_ids': input_ids,
+            'attention_mask': attention_mask
+        }
+        
+        if return_tensors == 'pt':
+            result = {k: torch.tensor(v) for k, v in result.items()}
+        
+        return result
+    
+    def decode(self, ids, skip_special_tokens=True):
+        """デコード"""
+        if isinstance(ids, torch.Tensor):
+            ids = ids.tolist()
+        
+        if skip_special_tokens:
+            ids = [i for i in ids if i not in [self.pad_token_id, self.bos_token_id, self.eos_token_id]]
+        
+        return self.sp.decode_ids(ids)
+    
+    def batch_decode(self, batch_ids, skip_special_tokens=True):
+        """バッチデコード"""
+        return [self.decode(ids, skip_special_tokens) for ids in batch_ids]
+    
+    def pad(self, features, padding=True, max_length=None, return_tensors=None, **kwargs):
+        """HuggingFace DataCollator互換のpadメソッド"""
+        # input_ids, attention_mask, labelsを取得
+        input_ids = [f['input_ids'] for f in features] if isinstance(features, list) else features['input_ids']
+        attention_mask = [f.get('attention_mask') for f in features] if isinstance(features, list) else features.get('attention_mask')
+        labels = [f.get('labels') for f in features] if isinstance(features, list) else features.get('labels')
+        
+        # 最大長を計算
+        max_len = max(len(ids) for ids in input_ids)
+        if labels and labels[0] is not None:
+            max_label_len = max(len(l) for l in labels)
+        
+        # パディング
+        padded_input_ids = []
+        padded_attention_mask = []
+        padded_labels = []
+        
+        for i, ids in enumerate(input_ids):
+            pad_len = max_len - len(ids)
+            padded_input_ids.append(ids + [self.pad_token_id] * pad_len)
+            if attention_mask and attention_mask[i] is not None:
+                padded_attention_mask.append(attention_mask[i] + [0] * pad_len)
+            if labels and labels[i] is not None:
+                label_pad_len = max_label_len - len(labels[i])
+                padded_labels.append(labels[i] + [-100] * label_pad_len)
+        
+        result = {'input_ids': padded_input_ids}
+        if padded_attention_mask:
+            result['attention_mask'] = padded_attention_mask
+        if padded_labels:
+            result['labels'] = padded_labels
+        
+        if return_tensors == 'pt':
+            result = {k: torch.tensor(v) for k, v in result.items()}
+        
+        return result
+
+
+def load_data(
+    data_dir: Path,
+    teacher_dir: Optional[Path],
+    use_opus_target: bool = False
+) -> DatasetDict:
+    """データをロード"""
+    
+    # 日本語（ソース）
+    with open(data_dir / "train.ja", 'r', encoding='utf-8') as f:
+        train_ja = [line.strip() for line in f]
+    with open(data_dir / "val.ja", 'r', encoding='utf-8') as f:
+        val_ja = [line.strip() for line in f]
+    with open(data_dir / "test.ja", 'r', encoding='utf-8') as f:
+        test_ja = [line.strip() for line in f]
+    
+    # 韓国語（ターゲット）
+    if use_opus_target:
+        print("ターゲット: OPUS韓国語")
+        ko_train_path = data_dir / "train.ko"
+    else:
+        print("ターゲット: 教師翻訳（NLLB/M2M100）")
+        ko_train_path = teacher_dir / "train.ko"
+    
+    with open(ko_train_path, 'r', encoding='utf-8') as f:
+        train_ko = [line.strip() for line in f]
+    
+    # val/testは常にOPUS（評価用）
+    with open(data_dir / "val.ko", 'r', encoding='utf-8') as f:
+        val_ko = [line.strip() for line in f]
+    with open(data_dir / "test.ko", 'r', encoding='utf-8') as f:
+        test_ko = [line.strip() for line in f]
+    
+    # Dataset作成
+    dataset = DatasetDict({
+        'train': Dataset.from_dict({'ja': train_ja, 'ko': train_ko}),
+        'validation': Dataset.from_dict({'ja': val_ja, 'ko': val_ko}),
+        'test': Dataset.from_dict({'ja': test_ja, 'ko': test_ko}),
+    })
+    
+    print(f"Train: {len(dataset['train']):,}")
+    print(f"Val:   {len(dataset['validation']):,}")
+    print(f"Test:  {len(dataset['test']):,}")
+    
+    return dataset
+
+
+def create_model(config: ModelConfig, vocab_size: int) -> MarianMTModel:
+    """MarianMTモデルを作成"""
+    
+    marian_config = MarianConfig(
+        vocab_size=vocab_size,
+        encoder_layers=config.encoder_layers,
+        decoder_layers=config.decoder_layers,
+        encoder_attention_heads=config.encoder_attention_heads,
+        decoder_attention_heads=config.decoder_attention_heads,
+        d_model=config.d_model,
+        encoder_ffn_dim=config.encoder_ffn_dim,
+        decoder_ffn_dim=config.decoder_ffn_dim,
+        max_position_embeddings=config.max_position_embeddings,
+        dropout=config.dropout,
+        attention_dropout=config.attention_dropout,
+        activation_dropout=config.activation_dropout,
+        activation_function=config.activation_function,
+        pad_token_id=config.pad_token_id,
+        eos_token_id=config.eos_token_id,
+        decoder_start_token_id=config.decoder_start_token_id,
+        static_position_embeddings=config.static_position_embeddings,
+        # normalize_embedding=config.normalize_embedding,  # 一部バージョンで未対応
+    )
+    
+    model = MarianMTModel(marian_config)
+    
+    # パラメータ数を表示
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"モデルパラメータ数: {num_params:,} ({num_params/1e6:.1f}M)")
+    
+    return model
+
+
+def preprocess_function(examples, tokenizer, max_length=128):
+    """データを前処理"""
+    inputs = tokenizer(
+        examples['ja'],
+        max_length=max_length,
+        truncation=True,
+        padding=False,
+    )
+    
+    targets = tokenizer(
+        examples['ko'],
+        max_length=max_length,
+        truncation=True,
+        padding=False,
+    )
+    
+    inputs['labels'] = targets['input_ids']
+    return inputs
+
+
+def compute_metrics(eval_preds, tokenizer):
+    """評価メトリクス計算"""
+    metric = evaluate.load("sacrebleu")
+    
+    preds, labels = eval_preds
+    
+    # -100をpad_token_idに置換
+    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    
+    # デコード
+    decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    
+    # BLEU計算
+    result = metric.compute(
+        predictions=decoded_preds,
+        references=[[label] for label in decoded_labels]
+    )
+    
+    return {"bleu": result["score"]}
+
+
+def main():
+    parser = argparse.ArgumentParser(description="MarianMT学習")
+    parser.add_argument("--use-opus-target", action="store_true",
+                        help="OPUS韓国語をターゲットに使用（教師翻訳の代わり）")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="チェックポイントから再開")
+    parser.add_argument("--output-dir", type=str, default="models/ja-ko")
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--learning-rate", type=float, default=3e-4)
+    args = parser.parse_args()
+    
+    print("=" * 50)
+    print("MarianMT 学習")
+    print("=" * 50)
+    
+    # 設定
+    model_config = ModelConfig()
+    train_config = TrainingConfig()
+    
+    # 引数で上書き
+    train_config.output_dir = Path(args.output_dir)
+    train_config.num_train_epochs = args.epochs
+    train_config.per_device_train_batch_size = args.batch_size
+    train_config.learning_rate = args.learning_rate
+    
+    # デバイス確認
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"デバイス: {device}")
+    if device == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+    
+    # トークナイザー
+    print(f"\nトークナイザーをロード: {train_config.tokenizer_path}")
+    tokenizer = SPMTokenizer(str(train_config.tokenizer_path))
+    print(f"Vocab size: {tokenizer.vocab_size}")
+    
+    # データ
+    print(f"\nデータをロード...")
+    teacher_dir = Path("data/teacher") if not args.use_opus_target else None
+    dataset = load_data(
+        train_config.data_dir,
+        teacher_dir,
+        use_opus_target=args.use_opus_target
+    )
+    
+    # 前処理
+    print(f"\n前処理中...")
+    tokenized_dataset = dataset.map(
+        lambda x: preprocess_function(x, tokenizer, model_config.max_length),
+        batched=True,
+        remove_columns=['ja', 'ko'],
+        desc="Tokenizing"
+    )
+    
+    # モデル
+    print(f"\nモデルを作成...")
+    model = create_model(model_config, tokenizer.vocab_size)
+    
+    # Data Collator
+    data_collator = DataCollatorForSeq2Seq(
+        tokenizer=tokenizer,
+        model=model,
+        padding=True,
+        pad_to_multiple_of=8,
+    )
+    
+    # Training Arguments
+    training_args = Seq2SeqTrainingArguments(
+        output_dir=str(train_config.output_dir),
+        
+        # バッチ
+        per_device_train_batch_size=train_config.per_device_train_batch_size,
+        per_device_eval_batch_size=train_config.per_device_eval_batch_size,
+        gradient_accumulation_steps=train_config.gradient_accumulation_steps,
+        
+        # 学習率
+        learning_rate=train_config.learning_rate,
+        lr_scheduler_type=train_config.lr_scheduler_type,
+        warmup_steps=train_config.warmup_steps,
+        weight_decay=train_config.weight_decay,
+        
+        # エポック
+        num_train_epochs=train_config.num_train_epochs,
+        
+        # 評価・保存
+        eval_strategy=train_config.eval_strategy,
+        eval_steps=train_config.eval_steps,
+        save_strategy=train_config.save_strategy,
+        save_steps=train_config.save_steps,
+        save_total_limit=train_config.save_total_limit,
+        load_best_model_at_end=train_config.load_best_model_at_end,
+        metric_for_best_model=train_config.metric_for_best_model,
+        greater_is_better=train_config.greater_is_better,
+        
+        # 生成（評価用）
+        predict_with_generate=True,
+        generation_max_length=train_config.generation_max_length,
+        generation_num_beams=train_config.generation_num_beams,
+        
+        # その他
+        fp16=train_config.fp16 and device == "cuda",
+        dataloader_num_workers=0 if device != "cuda" else train_config.dataloader_num_workers,
+        logging_steps=train_config.logging_steps,
+        report_to=train_config.report_to,
+        
+        # 再開
+        resume_from_checkpoint=args.resume,
+    )
+    
+    # Trainer
+    trainer = Seq2SeqTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=tokenized_dataset['train'],
+        eval_dataset=tokenized_dataset['validation'],
+        data_collator=data_collator,
+        compute_metrics=lambda x: compute_metrics(x, tokenizer),
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=train_config.early_stopping_patience)],
+    )
+    
+    # 学習
+    print(f"\n学習開始...")
+    print(f"  エポック: {train_config.num_train_epochs}")
+    print(f"  バッチサイズ: {train_config.per_device_train_batch_size} x {train_config.gradient_accumulation_steps} = {train_config.per_device_train_batch_size * train_config.gradient_accumulation_steps}")
+    print(f"  学習率: {train_config.learning_rate}")
+    
+    trainer.train(resume_from_checkpoint=args.resume)
+    
+    # 保存
+    print(f"\nモデルを保存: {train_config.output_dir}")
+    trainer.save_model()
+    
+    # トークナイザーも保存（推論用）
+    import shutil
+    shutil.copy(train_config.tokenizer_path, train_config.output_dir / "spm.model")
+    
+    # 最終評価
+    print(f"\nテストセットで評価...")
+    results = trainer.evaluate(tokenized_dataset['test'])
+    print(f"Test BLEU: {results['eval_bleu']:.2f}")
+    
+    print("\n完了！")
+
+
+if __name__ == "__main__":
+    main()
