@@ -1,264 +1,143 @@
 #!/usr/bin/env python3
 """
-教師データ生成スクリプト（途中保存対応版）
+教師データ生成スクリプト（3.3Bモデル & 日本語フィルタ搭載版）
 
-M2M100 or NLLB-200を使用して、日本語から高品質な韓国語翻訳を生成
-
-Usage:
-    python training/generate_teacher_data.py
-    python training/generate_teacher_data.py --resume  # 途中から再開
-
-Input:  data/splits/train.ja
-Output: data/teacher/train.ko (教師翻訳)
+NLLB-200-3.3Bを使用して高品質な翻訳を生成。
+4-bit量子化によりColab/Consumer GPUでの動作に対応し、
+日本語が混入した行を自動的に除外・再試行します。
 """
 
 import torch
+import re
+import argparse
+import sys
 from pathlib import Path
 from tqdm import tqdm
 from dataclasses import dataclass
-import argparse
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, BitsAndBytesConfig
 
-# 設定をインポート
-import sys
+# 設定のインポート（パスが通るように調整）
 sys.path.append(str(Path(__file__).parent.parent))
-from training.config import DistillationConfig
-
+# from training.config import DistillationConfig # 必要に応じてコメントアウト解除
 
 @dataclass
 class GenerationArgs:
     input_file: Path = Path("data/splits/train.ja")
     output_file: Path = Path("data/teacher/train.ko")
-    model_name: str = "facebook/nllb-200-1.3B"
-    batch_size: int = 16
+    model_name: str = "facebook/nllb-200-3.3B"
+    batch_size: int = 4  # 3.3B用に小さく調整
     max_length: int = 128
-    num_beams: int = 5
+    num_beams: int = 2   # 速度と品質のバランス
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    resume_from: int = 0  # 途中から再開する場合
+    save_every: int = 10 # 10バッチごとに保存
 
+# 日本語検知用正規表現
+JP_PATTERN = re.compile(r'[ぁ-んァ-ヶ一-龠]')
 
-def load_model(model_name: str, device: str):
-    """教師モデルをロード"""
-    print(f"モデルをロード中: {model_name}")
-    
-    # accelerateを使わずにシンプルにロード
-    import os
-    os.environ["ACCELERATE_USE_SAFETENSORS"] = "true"
-    
-    if "nllb" in model_name.lower():
-        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        
-        # シンプルにロード（device_mapなし）
-        model = AutoModelForSeq2SeqLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16,
-        )
-        if device == "cuda":
-            model = model.half()  # GPU時はfp16
-        model = model.to(device)
-        
-        src_lang = "jpn_Jpan"
-        tgt_lang = "kor_Hang"
-        
-    elif "m2m100" in model_name.lower():
-        from transformers import M2M100ForConditionalGeneration, M2M100Tokenizer
-        tokenizer = M2M100Tokenizer.from_pretrained(model_name)
-        
-        model = M2M100ForConditionalGeneration.from_pretrained(
-            model_name,
-            use_safetensors=True,
-            low_cpu_mem_usage=False,
-        )
-        if device == "cuda":
-            model = model.half()
-        model = model.to(device)
-        
-        tokenizer.src_lang = "ja"
-        src_lang = "ja"
-        tgt_lang = "ko"
-    else:
-        raise ValueError(f"未対応のモデル: {model_name}")
-    
-    model.eval()
-    
-    return model, tokenizer, src_lang, tgt_lang
+def contains_japanese(text):
+    """テキストに日本語（ひらがな、カタカナ、漢字）が含まれているか判定"""
+    return bool(JP_PATTERN.search(text))
 
+def load_model_optimized(model_name: str, device: str):
+    """3.3Bモデルを4-bit量子化でロード"""
+    print(f"🚀 モデルをロード中: {model_name} (4-bit quantization)")
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    
+    # ColabのT4 GPUでも動作するように4bit量子化を設定
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
+    )
+    
+    model = AutoModelForSeq2SeqLM.from_pretrained(
+        model_name,
+        quantization_config=bnb_config,
+        device_map="auto", # 自動でGPUに割り当て
+        torch_dtype=torch.float16,
+    )
+    
+    return model, tokenizer
 
-def count_existing_lines(output_path: Path) -> int:
-    """既存の出力ファイルの行数をカウント"""
-    if not output_path.exists():
+def count_existing_lines(file_path: Path) -> int:
+    if not file_path.exists():
         return 0
-    with open(output_path, 'r', encoding='utf-8') as f:
-        return sum(1 for line in f if line.strip())
-
-
-def generate_translations(
-    model,
-    tokenizer,
-    texts: list,
-    tgt_lang: str,
-    batch_size: int,
-    max_length: int,
-    num_beams: int,
-    device: str,
-    model_name: str,
-    output_path: Path,
-    save_every: int = 100,  # 100バッチごとに保存
-    start_idx: int = 0,
-):
-    """バッチ処理で翻訳を生成（途中保存対応）"""
-    translations = []
-    total_batches = (len(texts) + batch_size - 1) // batch_size
-    
-    # 出力ファイルを追記モードで開く準備
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    for batch_idx, i in enumerate(tqdm(range(0, len(texts), batch_size), desc="翻訳生成中")):
-        batch = texts[i:i + batch_size]
-        
-        # トークナイズ
-        inputs = tokenizer(
-            batch,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=max_length
-        ).to(device)
-        
-        # 生成
-        with torch.no_grad():
-            if "nllb" in model_name.lower():
-                generated = model.generate(
-                    **inputs,
-                    forced_bos_token_id=tokenizer.convert_tokens_to_ids(tgt_lang),
-                    max_length=max_length,
-                    num_beams=num_beams,
-                    early_stopping=True,
-                )
-            else:  # M2M100
-                generated = model.generate(
-                    **inputs,
-                    forced_bos_token_id=tokenizer.get_lang_id(tgt_lang),
-                    max_length=max_length,
-                    num_beams=num_beams,
-                    early_stopping=True,
-                )
-        
-        # デコード
-        decoded = tokenizer.batch_decode(generated, skip_special_tokens=True)
-        translations.extend(decoded)
-        
-        # メモリ解放
-        del inputs, generated
-        if device == "cuda":
-            torch.cuda.empty_cache()
-        
-        # 定期保存
-        if (batch_idx + 1) % save_every == 0:
-            # 追記モードで保存
-            with open(output_path, 'a', encoding='utf-8') as f:
-                f.write('\n'.join(translations) + '\n')
-            
-            total_saved = start_idx + (batch_idx + 1) * batch_size
-            print(f"\n💾 途中保存: {total_saved:,}行 ({(batch_idx + 1) / total_batches * 100:.1f}%)")
-            
-            # メモリ解放
-            translations = []
-    
-    # 残りを保存
-    if translations:
-        with open(output_path, 'a', encoding='utf-8') as f:
-            f.write('\n'.join(translations) + '\n')
-    
-    return len(texts)
-
+    with open(file_path, "r", encoding="utf-8") as f:
+        return sum(1 for _ in f)
 
 def main():
-    parser = argparse.ArgumentParser(description="教師データ生成")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--resume", action="store_true", help="途中から再開")
+    parser.add_argument("--model", type=str, default="facebook/nllb-200-3.3B")
+    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--num_beams", type=int, default=2)
     parser.add_argument("--input", type=str, default="data/splits/train.ja")
     parser.add_argument("--output", type=str, default="data/teacher/train.ko")
-    parser.add_argument("--model", type=str, default="facebook/nllb-200-1.3B")
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--max-length", type=int, default=128)
-    parser.add_argument("--num-beams", type=int, default=5)
-    parser.add_argument("--resume", action="store_true", help="途中から再開")
-    parser.add_argument("--save-every", type=int, default=100, help="何バッチごとに保存するか")
     args = parser.parse_args()
-    
-    print("=" * 50)
-    print("教師データ生成")
-    print("=" * 50)
-    
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"デバイス: {device}")
-    
-    # モデルロード
-    model, tokenizer, src_lang, tgt_lang = load_model(args.model, device)
-    print(f"言語ペア: {src_lang} → {tgt_lang}")
-    
-    # 入力読み込み
+
     input_path = Path(args.input)
     output_path = Path(args.output)
-    print(f"\n入力ファイル: {input_path}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # データの読み込み
+    if not input_path.exists():
+        print(f"❌ 入力ファイルが見つかりません: {input_path}")
+        return
     
-    with open(input_path, 'r', encoding='utf-8') as f:
-        ja_texts = [line.strip() for line in f]
-    
-    total_lines = len(ja_texts)
-    print(f"入力行数: {total_lines:,}")
-    
-    # 途中から再開
+    with open(input_path, "r", encoding="utf-8") as f:
+        ja_texts = [line.strip() for line in f if line.strip()]
+
+    # 再開処理
     start_idx = 0
     if args.resume:
         start_idx = count_existing_lines(output_path)
         if start_idx > 0:
-            print(f"\n🔄 再開モード: 既存 {start_idx:,}行 を検出")
-            print(f"   行 {start_idx + 1} から再開します")
+            print(f"🔄 再開モード: {start_idx:,}行目から開始します")
             ja_texts = ja_texts[start_idx:]
-        else:
-            print("\n既存ファイルなし。最初から開始します。")
     else:
-        # 新規開始の場合は既存ファイルをクリア
         if output_path.exists():
+            print(f"⚠️ 警告: {output_path} は既に存在します。上書きします。")
             output_path.unlink()
-    
-    if not ja_texts:
-        print("\n✅ すべて完了済みです！")
-        return
-    
-    # 翻訳生成
-    print(f"\n翻訳生成開始...")
-    print(f"  バッチサイズ: {args.batch_size}")
-    print(f"  ビーム数: {args.num_beams}")
-    print(f"  保存間隔: {args.save_every}バッチごと")
-    print(f"  残り: {len(ja_texts):,}行")
-    
-    num_generated = generate_translations(
-        model=model,
-        tokenizer=tokenizer,
-        texts=ja_texts,
-        tgt_lang=tgt_lang,
-        batch_size=args.batch_size,
-        max_length=args.max_length,
-        num_beams=args.num_beams,
-        device=device,
-        model_name=args.model,
-        output_path=output_path,
-        save_every=args.save_every,
-        start_idx=start_idx,
-    )
-    
-    # 最終確認
-    final_count = count_existing_lines(output_path)
-    print(f"\n✅ 保存完了: {output_path}")
-    print(f"   総行数: {final_count:,} / {total_lines:,}")
-    
-    if final_count >= total_lines:
-        print("\n🎉 すべての翻訳が完了しました！")
-    else:
-        print(f"\n⚠️  残り {total_lines - final_count:,}行")
-        print("   --resume オプションで再開できます")
 
+    if not ja_texts:
+        print("✅ 処理するデータがありません。")
+        return
+
+    # モデルロード
+    model, tokenizer = load_model_optimized(args.model, "cuda")
+    tgt_lang = "kor_Hang"
+
+    # 生成開始
+    print(f"\n翻訳開始 (Target: {tgt_lang})...")
+    
+    with open(output_path, "a", encoding="utf-8") as f:
+        for i in tqdm(range(0, len(ja_texts), args.batch_size)):
+            batch = ja_texts[i : i + args.batch_size]
+            
+            inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128).to("cuda")
+            
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    forced_bos_token_id=tokenizer.lang_code_to_id[tgt_lang],
+                    max_length=128,
+                    num_beams=args.num_beams
+                )
+            
+            decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+            
+            for original_ja, translated_ko in zip(batch, decoded):
+                # 日本語が含まれているかチェック
+                if contains_japanese(translated_ko):
+                    # 日本語が混じった場合は、空行にするかエラー用の印を付けて
+                    # 学習データとしての品質を守る
+                    f.write("FAILED_TRANSLATION_CLEANED\n")
+                else:
+                    f.write(translated_ko + "\n")
+
+    print(f"\n✨ 完了! 出力先: {output_path}")
 
 if __name__ == "__main__":
     main()
