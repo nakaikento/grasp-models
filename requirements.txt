@@ -9,6 +9,8 @@ transformers>=4.35
 datasets>=2.14
 accelerate>=0.24
 sentencepiece>=0.1.99
+bitsandbytes>=0.41.1
+scipy
 
 # =============================================================================
 # Training
