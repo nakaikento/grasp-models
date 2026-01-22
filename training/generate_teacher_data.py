@@ -50,8 +50,7 @@ def load_model(model_name: str, device: str):
         # シンプルにロード（device_mapなし）
         model = AutoModelForSeq2SeqLM.from_pretrained(
             model_name,
-            use_safetensors=True,
-            low_cpu_mem_usage=False,
+            torch_dtype=torch.float16,
         )
         if device == "cuda":
             model = model.half()  # GPU時はfp16
