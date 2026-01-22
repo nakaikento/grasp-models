@@ -121,7 +121,7 @@ def main():
             with torch.no_grad():
                 outputs = model.generate(
                     **inputs,
-                    forced_bos_token_id=tokenizer.lang_code_to_id[tgt_lang],
+                    forced_bos_token_id=tokenizer.convert_tokens_to_ids(tgt_lang),
                     max_length=128,
                     num_beams=args.num_beams
                 )
