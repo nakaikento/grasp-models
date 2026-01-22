@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-教師データ生成スクリプト
+教師データ生成スクリプト（途中保存対応版）
 
 M2M100 or NLLB-200を使用して、日本語から高品質な韓国語翻訳を生成
 
 Usage:
     python training/generate_teacher_data.py
+    python training/generate_teacher_data.py --resume  # 途中から再開
 
 Input:  data/splits/train.ja
 Output: data/teacher/train.ko (教師翻訳)
@@ -83,6 +84,14 @@ def load_model(model_name: str, device: str):
     return model, tokenizer, src_lang, tgt_lang
 
 
+def count_existing_lines(output_path: Path) -> int:
+    """既存の出力ファイルの行数をカウント"""
+    if not output_path.exists():
+        return 0
+    with open(output_path, 'r', encoding='utf-8') as f:
+        return sum(1 for line in f if line.strip())
+
+
 def generate_translations(
     model,
     tokenizer,
@@ -92,12 +101,19 @@ def generate_translations(
     max_length: int,
     num_beams: int,
     device: str,
-    model_name: str
+    model_name: str,
+    output_path: Path,
+    save_every: int = 100,  # 100バッチごとに保存
+    start_idx: int = 0,
 ):
-    """バッチ処理で翻訳を生成"""
+    """バッチ処理で翻訳を生成（途中保存対応）"""
     translations = []
+    total_batches = (len(texts) + batch_size - 1) // batch_size
     
-    for i in tqdm(range(0, len(texts), batch_size), desc="翻訳生成中"):
+    # 出力ファイルを追記モードで開く準備
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    for batch_idx, i in enumerate(tqdm(range(0, len(texts), batch_size), desc="翻訳生成中")):
         batch = texts[i:i + batch_size]
         
         # トークナイズ
@@ -136,8 +152,25 @@ def generate_translations(
         del inputs, generated
         if device == "cuda":
             torch.cuda.empty_cache()
+        
+        # 定期保存
+        if (batch_idx + 1) % save_every == 0:
+            # 追記モードで保存
+            with open(output_path, 'a', encoding='utf-8') as f:
+                f.write('\n'.join(translations) + '\n')
+            
+            total_saved = start_idx + (batch_idx + 1) * batch_size
+            print(f"\n💾 途中保存: {total_saved:,}行 ({(batch_idx + 1) / total_batches * 100:.1f}%)")
+            
+            # メモリ解放
+            translations = []
     
-    return translations
+    # 残りを保存
+    if translations:
+        with open(output_path, 'a', encoding='utf-8') as f:
+            f.write('\n'.join(translations) + '\n')
+    
+    return len(texts)
 
 
 def main():
@@ -148,7 +181,8 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--max-length", type=int, default=128)
     parser.add_argument("--num-beams", type=int, default=5)
-    parser.add_argument("--resume-from", type=int, default=0)
+    parser.add_argument("--resume", action="store_true", help="途中から再開")
+    parser.add_argument("--save-every", type=int, default=100, help="何バッチごとに保存するか")
     args = parser.parse_args()
     
     print("=" * 50)
@@ -164,24 +198,42 @@ def main():
     
     # 入力読み込み
     input_path = Path(args.input)
+    output_path = Path(args.output)
     print(f"\n入力ファイル: {input_path}")
     
     with open(input_path, 'r', encoding='utf-8') as f:
         ja_texts = [line.strip() for line in f]
     
-    print(f"入力行数: {len(ja_texts):,}")
+    total_lines = len(ja_texts)
+    print(f"入力行数: {total_lines:,}")
     
     # 途中から再開
-    if args.resume_from > 0:
-        print(f"行 {args.resume_from} から再開")
-        ja_texts = ja_texts[args.resume_from:]
+    start_idx = 0
+    if args.resume:
+        start_idx = count_existing_lines(output_path)
+        if start_idx > 0:
+            print(f"\n🔄 再開モード: 既存 {start_idx:,}行 を検出")
+            print(f"   行 {start_idx + 1} から再開します")
+            ja_texts = ja_texts[start_idx:]
+        else:
+            print("\n既存ファイルなし。最初から開始します。")
+    else:
+        # 新規開始の場合は既存ファイルをクリア
+        if output_path.exists():
+            output_path.unlink()
+    
+    if not ja_texts:
+        print("\n✅ すべて完了済みです！")
+        return
     
     # 翻訳生成
     print(f"\n翻訳生成開始...")
     print(f"  バッチサイズ: {args.batch_size}")
     print(f"  ビーム数: {args.num_beams}")
+    print(f"  保存間隔: {args.save_every}バッチごと")
+    print(f"  残り: {len(ja_texts):,}行")
     
-    translations = generate_translations(
+    num_generated = generate_translations(
         model=model,
         tokenizer=tokenizer,
         texts=ja_texts,
@@ -190,26 +242,22 @@ def main():
         max_length=args.max_length,
         num_beams=args.num_beams,
         device=device,
-        model_name=args.model
+        model_name=args.model,
+        output_path=output_path,
+        save_every=args.save_every,
+        start_idx=start_idx,
     )
     
-    # 保存
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # 最終確認
+    final_count = count_existing_lines(output_path)
+    print(f"\n✅ 保存完了: {output_path}")
+    print(f"   総行数: {final_count:,} / {total_lines:,}")
     
-    # 再開の場合は追記
-    mode = 'a' if args.resume_from > 0 else 'w'
-    with open(output_path, mode, encoding='utf-8') as f:
-        f.write('\n'.join(translations))
-        if mode == 'w':
-            f.write('\n')
-    
-    print(f"\n保存完了: {output_path}")
-    print(f"生成行数: {len(translations):,}")
-    
-    # 推定時間表示
-    total_lines = len(ja_texts) + args.resume_from
-    print(f"\n処理完了: {total_lines:,} / {total_lines:,} 行")
+    if final_count >= total_lines:
+        print("\n🎉 すべての翻訳が完了しました！")
+    else:
+        print(f"\n⚠️  残り {total_lines - final_count:,}行")
+        print("   --resume オプションで再開できます")
 
 
 if __name__ == "__main__":
