@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-教師データ生成スクリプト（3.3Bモデル + リトライロジック搭載版）
+教師データ生成スクリプト（3.3Bモデル + バッチ・リトライ最適化版）
 
-NLLB-200-3.3Bを使用して高品質な翻訳を生成。
-4-bit量子化によりL4/T4 GPUに対応し、日本語混入時に設定を変えて再試行します。
+NLLB-200-3.3Bを使用。
+リトライ処理をバッチ化することで、日本語混入時の速度低下を劇的に改善しました。
 """
 
 import torch
@@ -12,7 +12,6 @@ import argparse
 import sys
 from pathlib import Path
 from tqdm import tqdm
-from dataclasses import dataclass
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, BitsAndBytesConfig
 
 # 日本語検知用正規表現（ひらがな・カタカナ・漢字）
@@ -54,7 +53,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--resume", action="store_true", help="途中から再開")
     parser.add_argument("--model", type=str, default="facebook/nllb-200-3.3B")
-    parser.add_argument("--batch_size", type=int, default=32) # L4向けに32を設定
+    parser.add_argument("--batch_size", type=int, default=64) # L4向けデフォルトを64に
     parser.add_argument("--num_beams", type=int, default=1)  # 速度重視
     parser.add_argument("--input", type=str, default="data/splits/train.ja")
     parser.add_argument("--output", type=str, default="data/teacher/train.ko")
@@ -95,15 +94,12 @@ def main():
 
     print(f"\n翻訳開始 (Target: {tgt_lang}, Batch Size: {args.batch_size})...")
     
-    
-
     with open(output_path, "a", encoding="utf-8") as f:
         for i in tqdm(range(0, len(ja_texts), args.batch_size)):
             batch = ja_texts[i : i + args.batch_size]
             
+            # 1. メイン翻訳 (一括バッチ)
             inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128).to("cuda")
-            
-            # 1回目の生成 (通常の推論)
             with torch.no_grad():
                 outputs = model.generate(
                     **inputs,
@@ -112,36 +108,37 @@ def main():
                     num_beams=args.num_beams,
                     do_sample=False
                 )
+            results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
             
-            decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+            # 2. 日本語が混じった行を特定
+            retry_indices = [idx for idx, text in enumerate(results) if contains_japanese(text)]
             
-            final_results = []
-            for idx, (original_ja, translated_ko) in enumerate(zip(batch, decoded)):
-                # 日本語が含まれているかチェック
-                if contains_japanese(translated_ko):
-                    # --- リトライ試行 (Samplingモードで1回だけ挑戦) ---
-                    retry_input = tokenizer([original_ja], return_tensors="pt").to("cuda")
-                    with torch.no_grad():
-                        retry_output = model.generate(
-                            **retry_input,
-                            forced_bos_token_id=tgt_lang_id,
-                            max_length=128,
-                            do_sample=True,      # ランダム性を導入
-                            temperature=0.7,     # 柔軟な生成
-                            top_p=0.9,
-                            num_beams=1
-                        )
-                    retry_text = tokenizer.decode(retry_output[0], skip_special_tokens=True)
-                    
+            # 3. 失敗した行だけをまとめてバッチリトライ
+            if retry_indices:
+                retry_inputs_texts = [batch[idx] for idx in retry_indices]
+                retry_inputs = tokenizer(retry_inputs_texts, return_tensors="pt", padding=True, truncation=True, max_length=128).to("cuda")
+                
+                with torch.no_grad():
+                    retry_outputs = model.generate(
+                        **retry_inputs,
+                        forced_bos_token_id=tgt_lang_id,
+                        max_length=128,
+                        do_sample=True,      # サンプリングで多様性を持たせる
+                        temperature=0.7,
+                        top_p=0.9,
+                        num_beams=1
+                    )
+                retry_results = tokenizer.batch_decode(retry_outputs, skip_special_tokens=True)
+                
+                # 結果を差し替え、それでも日本語なら FAILED にする
+                for idx, retry_text in zip(retry_indices, retry_results):
                     if contains_japanese(retry_text):
-                        final_results.append("FAILED_TRANSLATION_CLEANED")
+                        results[idx] = "FAILED_TRANSLATION_CLEANED"
                     else:
-                        final_results.append(retry_text)
-                else:
-                    final_results.append(translated_ko)
+                        results[idx] = retry_text
 
-            # ファイルに書き出し
-            for res in final_results:
+            # 4. ファイルに一斉書き出し
+            for res in results:
                 f.write(res + "\n")
 
     print(f"\n✨ 完了! 出力先: {output_path}")
