@@ -1,32 +1,32 @@
 #!/usr/bin/env python3
-"""
-教師データ生成スクリプト（3.3Bモデル + バッチ・リトライ最適化版）
-
-NLLB-200-3.3Bを使用。
-リトライ処理をバッチ化することで、日本語混入時の速度低下を劇的に改善しました。
-"""
-
 import torch
 import re
+import os
 import argparse
-import sys
 from pathlib import Path
 from tqdm import tqdm
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, BitsAndBytesConfig
 
-# 日本語検知用正規表現（ひらがな・カタカナ・漢字）
-JP_PATTERN = re.compile(r'[ぁ-んァ-ヶ一-龠]')
+# --- 定数設定 ---
+MODEL_NAME = "facebook/nllb-200-3.3b"
+SOURCE_FILE = "data/raw/OpenSubtitles.ja-ko.ja"
+OUTPUT_FILE = "data/teacher/train.ko"
+SAMPLE_INTERVAL = 10000  # 1万行ごとにサンプルを表示
 
+# 日本語検知用
+JP_PATTERN = re.compile(r'[ぁ-んァ-ヶ一-龠]')
 def contains_japanese(text):
-    """テキストに日本語が含まれているか判定"""
     return bool(JP_PATTERN.search(text))
 
-def load_model_optimized(model_name: str):
-    """3.3Bモデルを4-bit量子化でロード"""
-    print(f"🚀 モデルをロード中: {model_name} (4-bit quantization)")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--batch_size", type=int, default=256)
+    args = parser.parse_args()
+
+    print(f"🚀 モデルをロード中: {MODEL_NAME}")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    
+    # 4-bit量子化設定（VRAM節約と高速化）
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype=torch.float16,
@@ -35,113 +35,75 @@ def load_model_optimized(model_name: str):
     )
     
     model = AutoModelForSeq2SeqLM.from_pretrained(
-        model_name,
+        MODEL_NAME,
         quantization_config=bnb_config,
-        device_map="auto",
-        torch_dtype=torch.float16,
+        device_map="auto"
     )
     
-    return model, tokenizer
+    tgt_lang_id = tokenizer.lang_code_to_id["kor_Hang"]
 
-def count_existing_lines(file_path: Path) -> int:
-    if not file_path.exists():
-        return 0
-    with open(file_path, "r", encoding="utf-8") as f:
-        return sum(1 for _ in f)
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--resume", action="store_true", help="途中から再開")
-    parser.add_argument("--model", type=str, default="facebook/nllb-200-3.3B")
-    parser.add_argument("--batch_size", type=int, default=64) # L4向けデフォルトを64に
-    parser.add_argument("--num_beams", type=int, default=1)  # 速度重視
-    parser.add_argument("--input", type=str, default="data/splits/train.ja")
-    parser.add_argument("--output", type=str, default="data/teacher/train.ko")
-    args = parser.parse_args()
-
-    input_path = Path(args.input)
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # データの読み込み
-    if not input_path.exists():
-        print(f"❌ 入力ファイルが見つかりません: {input_path}")
+    # 原文データの読み込み
+    if not os.path.exists(SOURCE_FILE):
+        print(f"❌ エラー: {SOURCE_FILE} が見つかりません。")
         return
-    
-    with open(input_path, "r", encoding="utf-8") as f:
-        ja_texts = [line.strip() for line in f if line.strip()]
 
-    # 再開処理
+    with open(SOURCE_FILE, 'r', encoding='utf-8') as f:
+        ja_lines = [line.strip() for line in f]
+    
+    total_lines = len(ja_lines)
+    print(f"📖 総行数: {total_lines}")
+
+    # 再開ポイントの確認（既存ファイルの行数をカウント）
     start_idx = 0
-    if args.resume:
-        start_idx = count_existing_lines(output_path)
-        if start_idx > 0:
-            print(f"🔄 再開モード: {start_idx:,}行目から開始します")
-            ja_texts = ja_texts[start_idx:]
+    if os.path.exists(OUTPUT_FILE):
+        with open(OUTPUT_FILE, 'r', encoding='utf-8') as f:
+            start_idx = sum(1 for _ in f)
+        print(f"🔄 {start_idx}行目から再開します（既存データと同期）")
     else:
-        if output_path.exists():
-            print(f"⚠️ 警告: {output_path} は既に存在します。上書きします。")
-            output_path.unlink()
+        # 新規作成時にディレクトリがない場合は作成
+        os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
 
-    if not ja_texts:
-        print("✅ 処理するデータがありません。")
-        return
-
-    # モデルロード
-    model, tokenizer = load_model_optimized(args.model)
-    tgt_lang = "kor_Hang"
-    tgt_lang_id = tokenizer.convert_tokens_to_ids(tgt_lang)
-
-    print(f"\n翻訳開始 (Target: {tgt_lang}, Batch Size: {args.batch_size})...")
-    
-    with open(output_path, "a", encoding="utf-8") as f:
-        for i in tqdm(range(0, len(ja_texts), args.batch_size)):
-            batch = ja_texts[i : i + args.batch_size]
+    # 翻訳メインループ
+    with open(OUTPUT_FILE, 'a', encoding='utf-8') as f:
+        # tqdmで進捗を表示
+        for i in tqdm(range(start_idx, total_lines, args.batch_size), initial=start_idx//args.batch_size):
+            batch = ja_lines[i : i + args.batch_size]
             
-            # 1. メイン翻訳 (一括バッチ)
+            # 1. 翻訳実行
             inputs = tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=128).to("cuda")
             with torch.no_grad():
                 outputs = model.generate(
-                    **inputs,
-                    forced_bos_token_id=tgt_lang_id,
-                    max_length=128,
-                    num_beams=args.num_beams,
-                    do_sample=False
+                    **inputs, 
+                    forced_bos_token_id=tgt_lang_id, 
+                    max_length=128
                 )
             results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-            
-            # 2. 日本語が混じった行を特定
-            retry_indices = [idx for idx, text in enumerate(results) if contains_japanese(text)]
-            
-            # 3. 失敗した行だけをまとめてバッチリトライ
-            if retry_indices:
-                retry_inputs_texts = [batch[idx] for idx in retry_indices]
-                retry_inputs = tokenizer(retry_inputs_texts, return_tensors="pt", padding=True, truncation=True, max_length=128).to("cuda")
-                
-                with torch.no_grad():
-                    retry_outputs = model.generate(
-                        **retry_inputs,
-                        forced_bos_token_id=tgt_lang_id,
-                        max_length=128,
-                        do_sample=True,      # サンプリングで多様性を持たせる
-                        temperature=0.7,
-                        top_p=0.9,
-                        num_beams=1
-                    )
-                retry_results = tokenizer.batch_decode(retry_outputs, skip_special_tokens=True)
-                
-                # 結果を差し替え、それでも日本語なら FAILED にする
-                for idx, retry_text in zip(retry_indices, retry_results):
-                    if contains_japanese(retry_text):
-                        results[idx] = "FAILED_TRANSLATION_CLEANED"
-                    else:
-                        results[idx] = retry_text
 
-            # 4. ファイルに一斉書き出し
-            for res in results:
+            # 2. 日本語が混じった場合の簡易リトライ（オプション）
+            # ※今回は「行の同期」を最優先するため、失敗しても必ず1行書き出します
+            final_results = []
+            for idx, res in enumerate(results):
+                clean_res = res.replace("\n", " ").strip()
+                if contains_japanese(clean_res) or not clean_res:
+                    final_results.append("FAILED_TRANSLATION_CLEANED")
+                else:
+                    final_results.append(clean_res)
+
+            # 3. 1万行ごとのサンプル表示（安心機能）
+            if i % SAMPLE_INTERVAL < args.batch_size:
+                print(f"\n\n--- [進捗チェック: {i}行目] ---")
+                print(f"日: {batch[0]}")
+                print(f"韓: {final_results[0]}")
+                print("-" * 40)
+
+            # 4. ファイルへ書き出し
+            for res in final_results:
                 f.write(res + "\n")
+            
+            # バッファを強制フラッシュ（スリープ対策）
+            f.flush()
 
-    print(f"\n✨ 完了! 出力先: {output_path}")
+    print(f"✨ 完了しました！出力先: {OUTPUT_FILE}")
 
 if __name__ == "__main__":
     main()
