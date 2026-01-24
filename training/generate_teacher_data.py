@@ -40,7 +40,7 @@ def main():
         device_map="auto"
     )
     
-    tgt_lang_id = tokenizer.lang_code_to_id["kor_Hang"]
+    tgt_lang_id = tokenizer.convert_tokens_to_ids("kor_Hang")
 
     # 原文データの読み込み
     if not os.path.exists(SOURCE_FILE):
