@@ -4,7 +4,7 @@
 
 ## 背景
 
-Helsinki-NLP (Hugging Face) に日韓翻訳モデルが存在しなかったため、自作しました。リアルタイム字幕翻訳アプリ [Grasp](https://github.com/user/grasp) のコア翻訳エンジンとして使用予定です。
+Helsinki-NLP (Hugging Face) に日韓翻訳モデルが存在しなかったため、自作しました。
 
 ## モデル性能
 
