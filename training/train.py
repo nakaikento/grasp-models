@@ -16,7 +16,7 @@ import evaluate
 import numpy as np
 
 # --- 設定項目 ---
-MODEL_NAME = "Helsinki-NLP/opus-mt-ja-ko"  # ベースモデル
+MODEL_NAME = "Helsinki-NLP/opus-ja-ko"  # ベースモデル
 DATA_JA = "data/clean/train.ja"
 DATA_KO = "data/clean/train.ko"
 OUTPUT_DIR = "models/marian_ja_ko_v1"
