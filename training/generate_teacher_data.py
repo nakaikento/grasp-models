@@ -75,7 +75,10 @@ def main():
                 outputs = model.generate(
                     **inputs, 
                     forced_bos_token_id=tgt_lang_id, 
-                    max_length=128
+                    max_length=128,
+                    num_beams=4,              # 探索の幅を広げる（精度向上）
+                    no_repeat_ngram_size=3,    # 同じフレーズの繰り返しを防止
+                    early_stopping=True       # 効率的に終了
                 )
             results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
 
