@@ -114,6 +114,11 @@ class SPMTokenizer:
         """デコード"""
         if isinstance(ids, torch.Tensor):
             ids = ids.tolist()
+        elif isinstance(ids, np.ndarray):
+            ids = ids.tolist()
+        
+        # 整数のリストに変換
+        ids = [int(i) for i in ids]
         
         if skip_special_tokens:
             ids = [i for i in ids if i not in [self.pad_token_id, self.bos_token_id, self.eos_token_id]]
