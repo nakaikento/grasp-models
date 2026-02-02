@@ -121,6 +121,8 @@ def main():
             # 空行対策
             batch_cleaned = [c if c else "。" for c in batch_cleaned]
             
+            # ターゲット言語だけでなく、ソース言語(src_lang)も明示的に指定します
+            tokenizer.src_lang = src_lang_code
             inputs = tokenizer(batch_cleaned, return_tensors="pt", 
                                padding=True, truncation=True, 
                                max_length=args.max_length).to("cuda")
