@@ -115,21 +115,14 @@ pip install -r requirements.txt
 
 ### Step 1: データ取得
 
-[OPUS OpenSubtitles](https://opus.nlpl.eu/OpenSubtitles-v2018.php) から日韓対訳データをダウンロード。
-
+[OPUS OpenSubtitles](https://opus.nlpl.eu/OpenSubtitles-v2018.php) から日韓対訳データを取得し、`data/raw/` に配置します。
 ```bash
-mkdir -p data/raw
-cd data/raw
-
-# OPUS OpenSubtitles (ja-ko) をダウンロード
-wget https://opus.nlpl.eu/download.php?f=OpenSubtitles/v2018/moses/ja-ko.txt.zip
-unzip ja-ko.txt.zip
-
-# 確認
-ls -la
+ls data/raw/
 # OpenSubtitles.ja-ko.ja  (~1.18M行)
 # OpenSubtitles.ja-ko.ko  (~1.18M行)
 ```
+
+※ 既にリポジトリ内の `data/raw/` にデータが含まれています。
 
 ### Step 2: データ調査・分析
 
