@@ -94,6 +94,47 @@ ONNX Runtime + NNAPI で Tensor G2/G3 のNPUを活用可能。
 
 ---
 
+## 📘 教師データ生成（汎用版）
+
+`generate_teacher_data.py` を使用して、NLLB-200モデルで高品質な教師データを生成できます。
+
+### 日本語 → 韓国語
+
+```bash
+python3 training/generate_teacher_data.py \
+  --src_lang ja \
+  --tgt_lang ko \
+  --src_file data/splits/train.ja \
+  --output_file data/teacher/train_ja_ko.ko \
+  --batch_size 40 \
+  --num_beams 3
+```
+
+### 韓国語 → 日本語
+
+```bash
+python3 training/generate_teacher_data.py \
+  --src_lang ko \
+  --tgt_lang ja \
+  --src_file data/splits/train.ko \
+  --output_file data/teacher/train_ko_ja.ja \
+  --batch_size 40 \
+  --num_beams 3
+```
+
+### オプション
+
+- `--src_lang`: ソース言語 (`ja` | `ko`)
+- `--tgt_lang`: ターゲット言語 (`ja` | `ko`)
+- `--src_file`: 入力ファイルパス
+- `--output_file`: 出力ファイルパス
+- `--model_name`: NLLBモデル名（デフォルト: `facebook/nllb-200-3.3b`）
+- `--batch_size`: バッチサイズ（デフォルト: 40）
+- `--num_beams`: ビームサーチの幅（デフォルト: 3）
+- `--max_length`: 最大トークン長（デフォルト: 128）
+
+---
+
 ## モデル構築手順
 
 ゼロからモデルを構築する完全な手順です。
