@@ -136,9 +136,7 @@ def main():
                     max_length=args.max_length,
                     num_beams=args.num_beams,
                     # --- 追加・変更 ---
-                    num_beams=1, 
                     do_sample=False,
-                    
                     # 3. ペナルティを最大級に
                     repetition_penalty=2.0, 
                     
