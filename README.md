@@ -92,22 +92,300 @@ inputs = sp.encode(text, out_type=int)
 
 ONNX Runtime + NNAPI で Tensor G2/G3 のNPUを活用可能。
 
+---
+
+## モデル構築手順
+
+ゼロからモデルを構築する完全な手順です。
+
+### 環境構築
+
+```bash
+# リポジトリをクローン
+git clone https://github.com/nakaikento/mt-ja-ko.git
+cd mt-ja-ko
+
+# 仮想環境作成
+python -m venv venv
+source venv/bin/activate
+
+# 依存関係インストール
+pip install -r requirements.txt
+```
+
+### Step 1: データ取得
+
+[OPUS OpenSubtitles](https://opus.nlpl.eu/OpenSubtitles-v2018.php) から日韓対訳データをダウンロード。
+
+```bash
+mkdir -p data/raw
+cd data/raw
+
+# OPUS OpenSubtitles (ja-ko) をダウンロード
+wget https://opus.nlpl.eu/download.php?f=OpenSubtitles/v2018/moses/ja-ko.txt.zip
+unzip ja-ko.txt.zip
+
+# 確認
+ls -la
+# OpenSubtitles.ja-ko.ja  (~1.18M行)
+# OpenSubtitles.ja-ko.ko  (~1.18M行)
+```
+
+### Step 2: データ調査・分析
+
+生データの品質を確認します。
+
+```bash
+# 冒頭確認
+python scripts/inspect_data.py
+
+# 詳細分析（ノイズパターン、重複、アライメント品質）
+python scripts/analyze_data.py
+```
+
+**analyze_data.py の出力例：**
+- 基本統計（行数、文字数分布）
+- ノイズパターン検出（HTMLタグ、音楽記号、クレジット等）
+- アライメント品質（長さ比率が極端なペア）
+- 重複ペアの検出
+
+### Step 3: データクレンジング
+
+ノイズ除去、長さフィルタ、重複除去を行います。
+
+```bash
+python scripts/clean.py
+```
+
+**処理内容：**
+| 処理 | 説明 |
+|------|------|
+| パターン除去 | HTMLタグ、♪記号、字幕クレジット、URL等 |
+| テキスト正規化 | 連続記号の整理、空白の正規化 |
+| 長さフィルタ | 4文字未満、100文字超を除外 |
+| 長さ比率フィルタ | 日韓の文字数比率が0.25〜4.0の範囲外を除外 |
+| 重複除去 | 完全一致ペアの重複を削除 |
+
+**出力：**
+```
+data/cleaned/
+├── cleaned.ja    # クレンジング済み日本語
+├── cleaned.ko    # クレンジング済み韓国語
+└── stats.txt     # 統計情報
+```
+
+### Step 4: トークナイザー学習
+
+日韓両言語を含むSentencePieceモデルを学習します。
+
+```bash
+python scripts/train_tokenizer.py
+```
+
+**設定：**
+| パラメータ | 値 |
+|-----------|-----|
+| vocab_size | 32,000 |
+| model_type | unigram |
+| character_coverage | 0.9995 |
+
+**出力：**
+```
+data/tokenized/
+├── spm.model    # SentencePieceモデル
+└── spm.vocab    # 語彙ファイル
+```
+
+### Step 5: データ分割
+
+train / val / test に分割します。
+
+```bash
+python scripts/split_data.py
+```
+
+**分割比率：**
+| データセット | サイズ |
+|-------------|--------|
+| Train | ~99% |
+| Val | 5,000 |
+| Test | 5,000 |
+
+**出力：**
+```
+data/splits/
+├── train.ja, train.ko
+├── val.ja, val.ko
+└── test.ja, test.ko
+```
+
+### Step 6: 知識蒸留データ生成（オプション）
+
+大規模Teacherモデル（NLLB-200等）からsoft labelsを生成します。
+
+```bash
+python training/generate_teacher_data.py
+```
+
+### Step 7: モデル学習
+
+MarianMTアーキテクチャで学習を実行します。
+
+```bash
+# GPU推奨（RTX 4090で約50分）
+python training/train.py
+```
+
+**学習設定（config.py）：**
+| パラメータ | 値 |
+|-----------|-----|
+| batch_size | 128 |
+| epochs | 10 |
+| learning_rate | 5e-5 |
+| warmup_steps | 1000 |
+
+**出力：**
+```
+models/
+└── ja-ko-marianmt/
+    ├── pytorch_model.bin
+    ├── config.json
+    └── ...
+```
+
+### Step 8: ONNXエクスポート
+
+PyTorchモデルをONNX形式に変換します。
+
+```bash
+python export/to_onnx.py
+```
+
+**出力：**
+```
+models/ja-ko-onnx/
+├── encoder_model.onnx
+├── decoder_model.onnx
+├── decoder_with_past_model.onnx
+└── spm.model
+```
+
+### Step 9: INT8量子化
+
+モバイル向けに量子化します。
+
+```bash
+python export/quantize.py
+```
+
+**出力：**
+```
+models/ja-ko-onnx-int8/
+├── encoder_model_quantized.onnx      (35MB)
+├── decoder_model_quantized.onnx      (57MB)
+├── decoder_with_past_model_quantized.onnx (54MB)
+└── spm.model                         (807KB)
+```
+
+### Step 10: 評価
+
+テストセットで評価します。
+
+```bash
+python training/evaluate.py
+```
+
+**評価指標：**
+- BLEU
+- chrF++
+- 推論時間
+
+---
+
+## パイプライン概要図
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        データパイプライン                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  OPUS OpenSubtitles (ja-ko)                                     │
+│         │                                                       │
+│         ▼                                                       │
+│  ┌─────────────┐                                                │
+│  │ inspect_data │ ← 生データ確認                                 │
+│  └─────────────┘                                                │
+│         │                                                       │
+│         ▼                                                       │
+│  ┌──────────────┐                                               │
+│  │ analyze_data │ ← 品質調査・ノイズパターン検出                  │
+│  └──────────────┘                                               │
+│         │                                                       │
+│         ▼                                                       │
+│  ┌─────────┐     1.18M行 → 1.03M行                              │
+│  │  clean  │ ← ノイズ除去・長さフィルタ・重複除去                 │
+│  └─────────┘                                                    │
+│         │                                                       │
+│         ├──────────────────┐                                    │
+│         ▼                  ▼                                    │
+│  ┌────────────────┐  ┌────────────┐                             │
+│  │ train_tokenizer │  │ split_data │                            │
+│  └────────────────┘  └────────────┘                             │
+│         │                  │                                    │
+│         │    spm.model     │   train/val/test                   │
+│         │                  │                                    │
+│         └────────┬─────────┘                                    │
+│                  ▼                                              │
+│           ┌───────────┐                                         │
+│           │   train   │ ← MarianMT学習                          │
+│           └───────────┘                                         │
+│                  │                                              │
+│                  ▼                                              │
+│           ┌───────────┐                                         │
+│           │  to_onnx  │ ← ONNX変換                              │
+│           └───────────┘                                         │
+│                  │                                              │
+│                  ▼                                              │
+│           ┌───────────┐                                         │
+│           │ quantize  │ ← INT8量子化                            │
+│           └───────────┘                                         │
+│                  │                                              │
+│                  ▼                                              │
+│           ONNX INT8 モデル (148MB)                              │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## プロジェクト構成
 
 ```
 mt-ja-ko/
-├── training/
-│   ├── train.py          # 学習スクリプト
-│   ├── config.py         # モデル・学習設定
-│   └── generate_teacher_data.py  # Knowledge Distillation用
 ├── scripts/
-│   └── train_tokenizer.py
+│   ├── inspect_data.py       # 生データ冒頭確認
+│   ├── analyze_data.py       # データ品質調査
+│   ├── clean.py              # クレンジング
+│   ├── split_data.py         # train/val/test分割
+│   └── train_tokenizer.py    # SentencePiece学習
+├── training/
+│   ├── train.py              # モデル学習
+│   ├── config.py             # 学習設定
+│   ├── evaluate.py           # 評価
+│   └── generate_teacher_data.py  # 知識蒸留用
 ├── export/
-│   └── to_onnx.py
+│   ├── to_onnx.py            # ONNX変換
+│   └── quantize.py           # INT8量子化
 ├── data/
-│   ├── tokenized/        # SentencePieceモデル
-│   └── splits/           # train/val/test分割
-└── models/               # 学習済みモデル（gitignore）
+│   ├── raw/                  # 生データ（gitignore）
+│   ├── cleaned/              # クレンジング済み
+│   ├── tokenized/            # SentencePieceモデル
+│   └── splits/               # train/val/test
+├── models/                   # 学習済みモデル（gitignore）
+├── requirements.txt
+├── setup.sh                  # 環境構築スクリプト
+├── run.sh                    # 全パイプライン実行
+└── README.md
 ```
 
 ## 今後の改善点
