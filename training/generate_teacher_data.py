@@ -133,7 +133,10 @@ def main():
                     forced_bos_token_id=tgt_lang_id,
                     max_length=args.max_length,
                     num_beams=args.num_beams,
-                    no_repeat_ngram_size=3,
+                    repetition_penalty=1.5,      # 同じ単語の繰り返しを強く抑制
+                    no_repeat_ngram_size=3,      # 3単語以上の同じ並びを禁止
+                    length_penalty=0.6,          # 文を短く簡潔にまとめる（OpenSubtitlesには最適）
+                    bad_words_ids=[[tokenizer.pad_token_id]], # 不要なパディングを抑制
                     early_stopping=True
                 )
             
