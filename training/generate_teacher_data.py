@@ -127,16 +127,23 @@ def main():
                                padding=True, truncation=True, 
                                max_length=args.max_length).to("cuda")
             
+            # 修正箇所: model.generate の周辺
             with torch.no_grad():
+
                 outputs = model.generate(
                     **inputs,
                     forced_bos_token_id=tgt_lang_id,
                     max_length=args.max_length,
                     num_beams=args.num_beams,
-                    repetition_penalty=1.5,      # 同じ単語の繰り返しを禁止
-                    no_repeat_ngram_size=3,      # 3単語の並びが重複したらカット
-                    length_penalty=0.8,          # 字幕らしく簡潔な出力を促す
-                    do_sample=False,             # 決定的な出力を得てランダム性を排除
+                    # --- 追加・変更 ---
+                    num_beams=1, 
+                    do_sample=False,
+                    
+                    # 3. ペナルティを最大級に
+                    repetition_penalty=2.0, 
+                    
+                    # 4. 短文に最適化
+                    length_penalty=0.5,
                     early_stopping=True
                 )
             
