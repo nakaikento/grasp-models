@@ -495,3 +495,155 @@ FAILED_TRANSLATION_CLEANED
 元のコーパスの質を再評価し、Teacher Dataの必要性を検討
 
 ---
+
+## Experiment 10: Matched Dataset Training (2026-02-03)
+
+### 目的
+教師データ生成（Exp 1-9）を諦め、元のOPUSコーパスから品質でマッチングしたデータセットで直接トレーニング
+
+### データセット
+- **ソース:** OPUS OpenSubtitles ja-ko
+- **クリーニング:** 空行削除、重複除去、長さフィルタリング
+- **マッチング基準:** 文字数比率 0.3-3.0
+- **分割:**
+  - Train: 546,881 (95%)
+  - Validation: 14,392 (2.5%)
+  - Test: 14,392 (2.5%)
+
+### 初回トレーニング試行 (2026-02-03 17:00-18:25)
+
+#### 設定
+- **wandb run:** rare-cherry-13 (80s3lwwk)
+- **transformers:** 5.0.0 (⚠️ 問題あり)
+- **モデル:** MarianMT (6L encoder/decoder, 61.0M params)
+- **バッチサイズ:** 96
+- **学習率:** 3e-4
+- **Epochs:** 10
+
+#### 結果
+❌ **CATASTROPHIC FAILURE - チェックポイントが完全に壊れている**
+
+**トレーニング中の指標:**
+- WandB Validation BLEU: 0.22 (22%?)
+- Loss: 正常に減少
+- Step 784 でクラッシュ（OOM）
+
+**保存されたチェックポイントの評価:**
+- **checkpoint-6000 Test BLEU: 0.01** (壊滅的)
+- 出力: ",,," と "." のみの繰り返し
+- Brevity Penalty: 0.376（出力が参照の半分の長さ）
+- 出力トークン数: 35,931 vs 参照 71,078 (50.6%)
+
+**サンプル出力:**
+```
+Source: ラボに送って見てもらおう
+Reference: 가능하지
+Translation: . . . . .
+
+Source: 抵抗を予測しろ 注意を怠るな
+Reference: 반항이 있을 거니 전술적으로 진입해야 한다
+Translation: . . . . .
+```
+
+### 根本原因の特定
+
+#### 🔍 wandb history 分析
+前回成功した run (zsh840l3, deft-monkey-8) の設定を取得：
+
+**成功した設定 (2026-01-25, BLEU 33.03):**
+```yaml
+transformers: 4.57.6  ✅
+batch_size: 128
+use_cache: True  ✅
+learning_rate: 0.0003
+warmup_steps: 4000
+num_train_epochs: 10
+fp16: True
+gradient_accumulation_steps: 2
+lr_scheduler_type: cosine
+```
+
+**失敗した設定 (2026-02-03):**
+```yaml
+transformers: 5.0.0  ⚠️ 問題
+batch_size: 96
+use_cache: False  ⚠️ 問題
+(その他は同じ)
+```
+
+#### ⚡ 重大な発見
+**transformers 5.0.0 は破壊的変更を含んでいる！**
+
+1. **デフォルト設定の変更:** `use_cache: True → False`
+2. **チェックポイント保存/読み込み機構の問題**
+   - トレーニング中は BLEU 0.22 を記録
+   - 保存されたチェックポイントは BLEU 0.01（ゴミ）
+   - モデルの状態が正しく保存されていない可能性
+
+### 解決策
+
+#### ✅ transformers 4.57.6 へダウングレード
+```bash
+pip install transformers==4.57.6
+```
+
+成功したバージョンに戻すことで、チェックポイント保存/読み込みの問題を回避。
+
+### 再トレーニング (2026-02-03 18:37-)
+
+#### 設定
+- **wandb run:** summer-butterfly-15 (c63hera9)
+- **transformers:** 4.57.6 ✅
+- **モデル:** MarianMT (6L encoder/decoder, 61.0M params)
+- **バッチサイズ:** 128（成功時と同じ）
+- **学習率:** 3e-4
+- **Epochs:** 10
+- **Total steps:** 21,370
+
+#### 期待される結果
+- 前回 BLEU 33.03 を達成した設定を再現
+- データセットが異なるため完全一致はしないが、同等の性能を期待
+- チェックポイントが正常に保存・読み込み可能
+
+#### 状態
+🚀 **トレーニング実行中**
+- wandb: https://wandb.ai/okamoto2okamoto-personal/huggingface/runs/c63hera9
+
+### 教訓
+
+#### ❌ やってはいけないこと
+1. **transformers の最新版を無条件に使わない**
+   - 破壊的変更が含まれる可能性
+   - 成功した設定のバージョンを固定すべき
+2. **チェックポイントの評価を怠らない**
+   - wandb の指標だけを信じない
+   - 実際にチェックポイントをロードして評価すること
+
+#### ✅ ベストプラクティス
+1. **バージョン固定**
+   - 成功した環境は `requirements.txt` でバージョン固定
+   - 更新は慎重に、テスト環境で確認してから
+2. **評価の二重チェック**
+   - トレーニング中の指標
+   - 保存されたチェックポイントの実評価
+3. **前回の成功事例を記録**
+   - wandb run ID
+   - 全設定（transformers バージョン含む）
+   - 再現可能な形で保存
+
+### 参考: 成功した run の詳細
+
+**wandb run:** zsh840l3 (deft-monkey-8)
+- **日時:** 2026-01-25 08:25 UTC
+- **Test BLEU:** 33.03
+- **総ステップ:** 21,370
+- **所要時間:** 3017秒 (約50分)
+- **最終 loss:** 0.9787
+- **notebook:** training/mt_ja_ko_training.ipynb
+
+**トレーニング速度:**
+- train_samples_per_second: 1812.585
+- train_steps_per_second: 7.083
+- eval_samples_per_second: 375.075
+
+---
