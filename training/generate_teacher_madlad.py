@@ -63,10 +63,12 @@ def generate_translations(
     """
     
     print(f"🔧 モデル読み込み: {model_name}")
-    tokenizer = T5Tokenizer.from_pretrained(model_name)
+    cache_dir = "/workspace/huggingface_cache"
+    tokenizer = T5Tokenizer.from_pretrained(model_name, cache_dir=cache_dir)
     model = T5ForConditionalGeneration.from_pretrained(
         model_name,
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32
+        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        cache_dir=cache_dir
     ).to(device)
     
     print(f"📖 入力ファイル読み込み: {src_file}")
