@@ -304,3 +304,40 @@ grep 'View run at' /workspace/mt-ja-ko/train_bs112.log
 
 **最終更新:** 2026-02-03  
 **作成者:** Sora (OpenClaw)
+
+---
+
+## 🔐 セキュリティ方針
+
+### Git Push について
+
+**❌ RunPodから直接 git push しない**
+- RunPodは一時的なクラウド環境
+- 認証情報をクラウドに置くのはセキュリティリスク
+- SSH鍵やPersonal Access Tokenを配置しない
+
+**✅ ホストマシン（NUC）経由でpush**
+```bash
+# 1. RunPodで編集したファイルをダウンロード
+scp -P 32309 -i ~/.ssh/id_ed25519 \
+  root@157.157.221.29:/workspace/mt-ja-ko/FILE.md \
+  ~/path/to/local/mt-ja-ko/
+
+# 2. ローカルでコミット＆プッシュ
+cd ~/path/to/local/mt-ja-ko/
+git add FILE.md
+git commit -m "Update from RunPod"
+git push
+```
+
+**ワークフロー:**
+```
+RunPod (編集・実験)
+  ↓ scp
+NUC (git管理)
+  ↓ git push
+GitHub
+```
+
+この方針により、認証情報をクラウド環境に置かず、セキュリティを保ちながら開発できます。
+
