@@ -67,6 +67,63 @@ Helsinki-NLP (Hugging Face) に日韓翻訳モデルが存在しなかったた�
 🇰🇷 네가 없으면 살아갈 수 없어.
 ```
 
+## プロジェクト構成
+
+このリポジトリは **モデル開発専用** です。実際のアプリは別リポジトリで管理しています。
+
+### 📦 リポジトリ構成
+
+```
+mt-ja-ko/                    # モデル開発（このリポジトリ）
+├── models/
+│   ├── ja-ko-onnx-int8/    # 日本語→韓国語モデル
+│   └── ko-ja-onnx-int8/    # 韓国語→日本語モデル
+├── training/               # トレーニングスクリプト
+├── data/                   # データセット
+└── export/                 # ONNX変換・量子化
+
+grasp-ja-ko/                 # 日本語→韓国語アプリ
+└── 🔗 https://github.com/nakaikento/grasp-ja-ko
+    └── app/src/main/assets/models/ja-ko-onnx/
+
+grasp-ko-ja/                 # 韓国語→日本語アプリ
+└── 🔗 https://github.com/nakaikento/grasp-ko-ja
+    └── app/src/main/assets/models/ko-ja-onnx/
+```
+
+### 🎯 設計方針
+
+**言語ペア別アプリ = シンプル＆軽量**
+
+- **1アプリ1方向**: 日→韓と韓→日を別アプリに分離
+- **APKサイズ**: 各~150MB（1つのモデルのみ）
+- **ターゲット明確**: 日本人学習者 vs 韓国人学習者
+- **UI簡潔**: 言語切り替え不要
+
+**メリット:**
+- ✅ APKサイズが小さい（1方向のみ）
+- ✅ UIがシンプル（切り替え機能不要）
+- ✅ メンテナンスしやすい
+- ✅ ユーザー体験が明確
+
+### 📱 アプリケーション
+
+#### [grasp-ja-ko](https://github.com/nakaikento/grasp-ja-ko) - 日本語→韓国語
+- **ターゲット**: 日本人の韓国語学習者
+- **機能**: 
+  - 日本語音声認識（ASR）
+  - リアルタイム韓国語翻訳
+  - オーバーレイ字幕表示
+- **モデル**: ja-ko-onnx-int8 (148MB)
+
+#### [grasp-ko-ja](https://github.com/nakaikento/grasp-ko-ja) - 韓国語→日本語
+- **ターゲット**: 韓国人の日本語学習者
+- **機能**: 
+  - 韓国語音声認識（ASR）※開発中
+  - リアルタイム日本語翻訳
+  - オーバーレイ字幕表示
+- **モデル**: ko-ja-onnx-int8 (150MB)
+
 ## 使用方法
 
 ### Python (ONNX Runtime)
