@@ -39,8 +39,8 @@ ssh -i your-key.pem ubuntu@<instance-ip>
 ### 3. リポジトリセットアップ
 
 ```bash
-git clone https://github.com/nakaikento/mt-ja-ko.git
-cd mt-ja-ko
+git clone https://github.com/nakaikento/grasp-models.git
+cd grasp-models
 chmod +x scripts/run_aws.sh
 ./scripts/run_aws.sh setup
 ```
@@ -51,14 +51,14 @@ chmod +x scripts/run_aws.sh
 
 ```bash
 # ローカルで実行
-scp -i your-key.pem -r data/ ubuntu@<instance-ip>:~/mt-ja-ko/
+scp -i your-key.pem -r data/ ubuntu@<instance-ip>:~/grasp-models/
 ```
 
 **方法B: S3経由**
 
 ```bash
 # AWSインスタンスで実行
-export S3_DATA_PATH="s3://your-bucket/mt-ja-ko/data"
+export S3_DATA_PATH="s3://your-bucket/grasp-models/data"
 ./scripts/run_aws.sh data
 ```
 
@@ -164,7 +164,7 @@ python training/generate_teacher_data.py --resume-from 500000
 ### S3にアップロード
 
 ```bash
-export S3_MODEL_PATH="s3://your-bucket/mt-ja-ko/models"
+export S3_MODEL_PATH="s3://your-bucket/grasp-models/models"
 ./scripts/run_aws.sh upload
 ```
 
@@ -172,7 +172,7 @@ export S3_MODEL_PATH="s3://your-bucket/mt-ja-ko/models"
 
 ```bash
 # ローカルで実行
-scp -i your-key.pem -r ubuntu@<instance-ip>:~/mt-ja-ko/models/ ./
+scp -i your-key.pem -r ubuntu@<instance-ip>:~/grasp-models/models/ ./
 ```
 
 ---

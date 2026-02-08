@@ -17,13 +17,13 @@ replacements = [
     ('Japanese→Korean', 'Korean→Japanese'),
     
     # リポジトリ名は維持（変更前にマーク）
-    ('mt-ja-ko', 'KEEP_REPO_NAME'),
+    ('grasp-models', 'KEEP_REPO_NAME'),
     
     ('ja-ko', 'ko-ja'),
     ('ja→ko', 'ko→ja'),
     
     # リポジトリ名を戻す
-    ('KEEP_REPO_NAME', 'mt-ja-ko'),
+    ('KEEP_REPO_NAME', 'grasp-models'),
     
     # ファイルパス（データ）
     ('train.ja', 'TEMP_TRAIN_JA'),

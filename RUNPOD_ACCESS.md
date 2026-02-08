@@ -27,7 +27,7 @@ pwd
 
 ### プロジェクトディレクトリ
 ```bash
-cd /workspace/mt-ja-ko
+cd /workspace/grasp-models
 ```
 
 ---
@@ -65,7 +65,7 @@ wandb login $WANDB_API_KEY
 ps aux | grep 'python3.*train.py' | grep -v grep
 
 # 最新ログ確認
-tail -100 /workspace/mt-ja-ko/train_bs112.log
+tail -100 /workspace/grasp-models/train_bs112.log
 
 # GPU使用状況
 nvidia-smi
@@ -74,7 +74,7 @@ nvidia-smi
 ### 訓練ログからWandB URL取得
 
 ```bash
-grep 'View run at' /workspace/mt-ja-ko/train_bs112.log
+grep 'View run at' /workspace/grasp-models/train_bs112.log
 # 出力例: https://wandb.ai/okamoto2okamoto-personal/huggingface/runs/09s29z5s
 ```
 
@@ -82,7 +82,7 @@ grep 'View run at' /workspace/mt-ja-ko/train_bs112.log
 
 #### 現在実行中（2026-02-03）
 ```bash
-cd /workspace/mt-ja-ko
+cd /workspace/grasp-models
 
 nohup python3 training/train.py \
     --data-dir data/matched \
@@ -119,13 +119,13 @@ python3 training/train.py \
 ### 訓練進捗確認
 ```bash
 # 最新100行
-tail -100 /workspace/mt-ja-ko/train_bs112.log
+tail -100 /workspace/grasp-models/train_bs112.log
 
 # epochとBLEUスコアのみ抽出
-grep -E "'epoch':|eval_bleu" /workspace/mt-ja-ko/train_bs112.log | tail -20
+grep -E "'epoch':|eval_bleu" /workspace/grasp-models/train_bs112.log | tail -20
 
 # リアルタイム監視
-tail -f /workspace/mt-ja-ko/train_bs112.log
+tail -f /workspace/grasp-models/train_bs112.log
 ```
 
 ### GPU/メモリ監視
@@ -158,8 +158,8 @@ nvidia-smi --query-compute-apps=pid --format=csv,noheader
 ### ファイル確認
 ```bash
 # データファイル確認
-ls -lh /workspace/mt-ja-ko/data/matched/
-wc -l /workspace/mt-ja-ko/data/matched/*.ja
+ls -lh /workspace/grasp-models/data/matched/
+wc -l /workspace/grasp-models/data/matched/*.ja
 
 # モデルチェックポイント確認
 ls -lh /workspace/models/ja-ko-final/checkpoint-*/
@@ -172,14 +172,14 @@ find /workspace/models/ja-ko-final -name 'trainer_state.json' -exec tail {} \; |
 ### ログ分析
 ```bash
 # 訓練速度（it/s）の推移
-grep 'it/s' /workspace/mt-ja-ko/train_bs112.log | tail -50
+grep 'it/s' /workspace/grasp-models/train_bs112.log | tail -50
 
 # エラー確認
-grep -i error /workspace/mt-ja-ko/train_bs112.log
-grep -i 'out of memory' /workspace/mt-ja-ko/train_bs112.log
+grep -i error /workspace/grasp-models/train_bs112.log
+grep -i 'out of memory' /workspace/grasp-models/train_bs112.log
 
 # 評価結果一覧
-grep 'eval_bleu' /workspace/mt-ja-ko/train_bs112.log
+grep 'eval_bleu' /workspace/grasp-models/train_bs112.log
 ```
 
 ---
@@ -188,7 +188,7 @@ grep 'eval_bleu' /workspace/mt-ja-ko/train_bs112.log
 
 ### データディレクトリ構造
 ```
-/workspace/mt-ja-ko/
+/workspace/grasp-models/
 ├── data/
 │   ├── splits/          # 元データ（1,035,749ペア）
 │   ├── cleaned/         # クリーニング後（1,025,781ペア）
@@ -263,7 +263,7 @@ ps aux | grep train.py
 nvidia-smi
 
 # ログの最後を確認
-tail -50 /workspace/mt-ja-ko/train_bs112.log
+tail -50 /workspace/grasp-models/train_bs112.log
 
 # 必要なら強制終了して再開
 pkill -9 python3
@@ -279,13 +279,13 @@ ssh root@157.157.221.29 -p 32309 -i ~/.ssh/id_ed25519
 ps aux | grep train.py
 
 # ログで進捗確認
-tail -100 /workspace/mt-ja-ko/train_bs112.log
+tail -100 /workspace/grasp-models/train_bs112.log
 ```
 
 ### WandBでリアルタイム確認
 ```bash
 # ログからWandB URLを抽出
-grep 'View run at' /workspace/mt-ja-ko/train_bs112.log
+grep 'View run at' /workspace/grasp-models/train_bs112.log
 
 # ブラウザで開いて進捗確認
 # loss, learning_rate, eval_bleu などをモニタリング
@@ -320,11 +320,11 @@ grep 'View run at' /workspace/mt-ja-ko/train_bs112.log
 ```bash
 # 1. RunPodで編集したファイルをダウンロード
 scp -P 32309 -i ~/.ssh/id_ed25519 \
-  root@157.157.221.29:/workspace/mt-ja-ko/FILE.md \
-  ~/path/to/local/mt-ja-ko/
+  root@157.157.221.29:/workspace/grasp-models/FILE.md \
+  ~/path/to/local/grasp-models/
 
 # 2. ローカルでコミット＆プッシュ
-cd ~/path/to/local/mt-ja-ko/
+cd ~/path/to/local/grasp-models/
 git add FILE.md
 git commit -m "Update from RunPod"
 git push

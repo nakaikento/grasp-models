@@ -1,4 +1,4 @@
-# mt-ja-ko Requirements (RunPod & Security Patch Optimized)
+# grasp-models Requirements (RunPod & Security Patch Optimized)
 # =============================================================================
 # Core - セキュリティ要件(torch>=2.6)を満たす構成
 # =============================================================================

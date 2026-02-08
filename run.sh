@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# mt-ja-ko 実行スクリプト
+# grasp-models 実行スクリプト
 # 
 # ローカルGPU / AWS EC2 両対応
 # =============================================================================
@@ -13,7 +13,7 @@ cd "$PROJECT_DIR"
 # -----------------------------------------------------------------------------
 # 設定
 # -----------------------------------------------------------------------------
-WANDB_PROJECT="mt-ja-ko"
+WANDB_PROJECT="grasp-models"
 
 # -----------------------------------------------------------------------------
 # ヘルパー関数
@@ -262,8 +262,8 @@ cmd_upload() {
         exit 1
     fi
     
-    echo "アップロード中: models/ -> s3://$S3_BUCKET/mt-ja-ko/models/"
-    aws s3 sync models/ "s3://$S3_BUCKET/mt-ja-ko/models/"
+    echo "アップロード中: models/ -> s3://$S3_BUCKET/grasp-models/models/"
+    aws s3 sync models/ "s3://$S3_BUCKET/grasp-models/models/"
     
     echo "完了！"
 }
@@ -276,8 +276,8 @@ cmd_download() {
         exit 1
     fi
     
-    echo "ダウンロード中: s3://$S3_BUCKET/mt-ja-ko/data/ -> data/"
-    aws s3 sync "s3://$S3_BUCKET/mt-ja-ko/data/" data/
+    echo "ダウンロード中: s3://$S3_BUCKET/grasp-models/data/ -> data/"
+    aws s3 sync "s3://$S3_BUCKET/grasp-models/data/" data/
     
     echo "完了！"
 }

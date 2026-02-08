@@ -1,4 +1,4 @@
-# mt-ja-ko
+# grasp-models
 
 日本語→韓国語のオンデバイス翻訳モデル。字幕・ドラマ・アニメに特化した軽量高速エンジン。
 
@@ -74,7 +74,7 @@ Helsinki-NLP (Hugging Face) に日韓翻訳モデルが存在しなかったた�
 ### 📦 リポジトリ構成
 
 ```
-mt-ja-ko/                    # モデル開発（このリポジトリ）
+grasp-models/                    # モデル開発（このリポジトリ）
 ├── models/
 │   ├── ja-ko-onnx-int8/    # 日本語→韓国語モデル
 │   └── ko-ja-onnx-int8/    # 韓国語→日本語モデル
@@ -200,8 +200,8 @@ python3 training/generate_teacher_data.py \
 
 ```bash
 # リポジトリをクローン
-git clone https://github.com/nakaikento/mt-ja-ko.git
-cd mt-ja-ko
+git clone https://github.com/nakaikento/grasp-models.git
+cd grasp-models
 
 # 仮想環境作成
 python -m venv venv
@@ -452,7 +452,7 @@ python training/evaluate.py
 ## プロジェクト構成
 
 ```
-mt-ja-ko/
+grasp-models/
 ├── scripts/
 │   ├── inspect_data.py       # 生データ冒頭確認
 │   ├── analyze_data.py       # データ品質調査

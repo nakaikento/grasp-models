@@ -20,7 +20,7 @@
 **初回のみ実行**
 
 ```bash
-cd /workspace/mt-ja-ko
+cd /workspace/grasp-models
 bash scripts/setup.sh
 ```
 
@@ -196,7 +196,7 @@ cd /path/to/Grasp
 
 # Release作成
 gh release create v2.0.0 \
-  /workspace/mt-ja-ko/ko-ja-onnx.zip \
+  /workspace/grasp-models/ko-ja-onnx.zip \
   --title "v2.0.0 - 双方向翻訳" \
   --notes "韓→日翻訳モデル追加（BLEU: XX.XX）"
 ```

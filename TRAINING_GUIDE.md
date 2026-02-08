@@ -17,8 +17,8 @@ MarianMT翻訳モデルのRunPod学習手順
 ssh root@<pod-ip> -p <port>
 
 # リポジトリクローン
-git clone https://github.com/nakaikento/mt-ja-ko.git
-cd mt-ja-ko
+git clone https://github.com/nakaikento/grasp-models.git
+cd grasp-models
 ```
 
 ### 2. 依存関係インストール

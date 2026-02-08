@@ -1,4 +1,4 @@
-# 設計ドキュメント: mt-ja-ko
+# 設計ドキュメント: grasp-models
 
 OPUS-MT-trainおよびHelsinki-NLPの知見を参考にした設計メモ。
 
@@ -320,7 +320,7 @@ train, val = train_test_split(train_val, test_size=5000, random_state=42)
 ## 8. ディレクトリ構成（更新版）
 
 ```
-mt-ja-ko/
+grasp-models/
 ├── data/
 │   ├── raw/                    # OPUSデータ
 │   ├── cleaned/                # クレンジング済み
