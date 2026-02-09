@@ -4,22 +4,17 @@ Graspで使用するモデルの一覧と取得方法
 
 ## ASR (音声認識)
 
-### Sherpa-ONNX Korean ASR
+### Sherpa-ONNX Korean ASR (k2-fsa)
 - **種類**: Transducer (Zipformer)
-- **言語**: 韓国語
+- **言語**: 韓国語 (ko)
 - **ソース**: [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
+- **HuggingFace**: [sherpa-onnx-streaming-zipformer-korean-2024-06-16](https://huggingface.co/k2-fsa/sherpa-onnx-streaming-zipformer-korean-2024-06-16)
 - **モデルファイル**:
-  - `encoder-epoch-99-avg-1.int8.onnx`
-  - `decoder-epoch-99-avg-1.int8.onnx`
-  - `joiner-epoch-99-avg-1.int8.onnx`
-  - `bpe.model`
-  - `tokens.txt`
-
-#### 取得方法
-```bash
-# HuggingFaceから取得
-# https://huggingface.co/k2-fsa/sherpa-onnx-streaming-zipformer-korean-2024-06-16
-```
+  - `encoder-epoch-99-avg-1.int8.onnx` - Encoder
+  - `decoder-epoch-99-avg-1.int8.onnx` - Decoder
+  - `joiner-epoch-99-avg-1.int8.onnx` - Joiner
+  - `tokens.txt` - 韓国語BPEトークン
+- **場所**: `grasp-ko-ja/app/src/main/assets/models/`
 
 ### SileroVAD
 - **種類**: Voice Activity Detection
