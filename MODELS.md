@@ -38,7 +38,7 @@ Graspで使用する全モデルの一覧と性能評価結果
 
 - **種類**: Transducer (Zipformer)
 - **ソース**: [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
-- **HuggingFace**: [sherpa-onnx-streaming-zipformer-korean-2024-06-16](https://huggingface.co/k2-fsa/sherpa-onnx-streaming-zipformer-korean-2024-06-16)
+- **モデル**: [sherpa-onnx-streaming-zipformer-korean-2024-06-16](https://huggingface.co/k2-fsa/sherpa-onnx-streaming-zipformer-korean-2024-06-16)
 - **場所**: `grasp-ko-ja/app/src/main/assets/models/`
 - **ファイル**:
   - `encoder-epoch-99-avg-1.int8.onnx`
