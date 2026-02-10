@@ -5,15 +5,22 @@
 ## ASRモデル比較
 
 ### 評価データ
+#### 日本語
 - **ソース**: TED Talk 日本語 (高橋晋平「しりとり発想法」)
 - **長さ**: 約5.5分 (331秒)
 - **参照**: 日本語手動字幕 (1,986文字)
+
+#### 韓国語
+- **ソース**: セバシ講演 (인순이)
+- **長さ**: 約18分 (1103秒)
+- **参照**: YouTube自動字幕 (4,393文字) ※相対比較用
 
 ### 結果
 
 | モデル | サイズ | 処理時間 | CER | 評価 |
 |--------|--------|----------|-----|------|
 | sherpa-onnx Korean (int8) | ~70MB | 高速 | 62.3% | ❌ 実用困難 |
+| **Whisper base (Korean)** | 139MB | ~55s (CPU) | **17.6%** | 🟡 良好 |
 | sherpa-onnx ReazonSpeech (FP32) | ~200MB | 高速 | 53.6% | ❌ 実用困難 |
 | Whisper tiny | 73MB | ~15s (CPU) | 36.0% | ❌ 要改善 |
 | Whisper base | 139MB | ~20s (CPU) | 20.8% | 🟠 許容範囲 |
@@ -108,10 +115,10 @@
 1. **Whisper base-q8 への移行検討** ← 最優先
    - 同サイズ（78MB vs 73MB）でCER 22% vs 54%
    - whisper.cpp / pywhispercpp で実装可能
-2. 韓国語ASRも同様にWhisper量子化モデルで検証
+2. **韓国語ASRも Whisper base-q8 推奨**
    - 現行sherpa-onnx Korean: CER 62%
-   - Whisper base-q8で20-25%に改善見込み（日本語と同傾向）
-   - 検証には韓国語TED Talks等のデータ収集が必要
+   - Whisper base: CER 17.6% ← **検証済み（セバシ講演18分）**
+   - 日本語と同様の大幅改善を確認
 
 ### 中期
 1. whisper.cpp Android統合（NDK経由）
