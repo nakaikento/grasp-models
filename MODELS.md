@@ -141,3 +141,27 @@
 
 ### 推奨
 日本語ASRには **Q8_0（int8相当）** を推奨。精度と速度のバランスが最適。
+
+---
+
+## 2026-02-10 更新: sherpa-onnx Whisper ONNX 実機テスト
+
+### 実機ベンチマーク（Pixel 7a, CPU 4スレッド）
+
+| モデル | サイズ | 速度 | 精度 |
+|--------|--------|------|------|
+| sherpa-onnx Transducer | 73MB | 高速 | CER 54% ❌ |
+| whisper.cpp base-q8 | 78MB | 125秒 | CER 22% ❌遅い |
+| **Whisper base ONNX int8** | 153MB | **500ms** | 🟠 誤認識あり |
+| **Whisper small ONNX int8** | 359MB | **1.5-1.9秒** | ✅ 正確 |
+
+### 結論
+- **採用**: Whisper small ONNX int8 (359MB)
+- **速度**: 1.5-1.9秒（実用的）
+- **精度**: 誤認識ほぼなし
+
+### 重要な発見
+同じWhisperモデルでもランタイムで速度が劇的に違う:
+- whisper.cpp: 125秒
+- ONNX Runtime: 1.5秒
+- → **60-80倍高速化**
