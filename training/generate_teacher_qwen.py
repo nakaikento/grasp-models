@@ -5,7 +5,8 @@ Qwen2.5-7B + vLLM を使用した教師データ生成スクリプト
 使い方:
 1. vLLMサーバー起動:
    python -m vllm.entrypoints.openai.api_server \
-     --model Qwen/Qwen2.5-7B-Instruct --port 8000
+     --model Qwen/Qwen2.5-7B-Instruct --port 8000 \
+     --gpu-memory-utilization 0.95
 
 2. 教師データ生成:
    python generate_teacher_qwen.py \
@@ -13,17 +14,18 @@ Qwen2.5-7B + vLLM を使用した教師データ生成スクリプト
      --src_file data/raw/source.ko \
      --output_file data/teacher/train.ja
 
-※ v2: 行順序を保証（並列処理でも正しい順序で出力）
+※ v3: 非同期リクエストでGPU使用率最大化
 """
 
 import os
 import re
 import json
 import time
+import asyncio
 import argparse
+import aiohttp
 import requests
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # vLLM APIエンドポイント
 VLLM_URL = "http://localhost:8000/v1/chat/completions"
@@ -58,71 +60,79 @@ def create_prompt(src_text, src_lang, tgt_lang):
 
 {tgt_name}:"""
 
-def translate_single(args_tuple):
-    """単一テキストを翻訳（インデックス付き）"""
-    global_idx, src_text, src_lang, tgt_lang, timeout = args_tuple
-    
-    prompt = create_prompt(src_text, src_lang, tgt_lang)
-    
-    payload = {
-        "model": MODEL_NAME,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 256,
-        "temperature": 0.1,
-    }
-    
-    try:
-        resp = requests.post(VLLM_URL, json=payload, timeout=timeout)
-        resp.raise_for_status()
-        result = resp.json()["choices"][0]["message"]["content"].strip()
-        
-        # 改行を除去
-        result = result.replace("\n", " ").strip()
-        
-        # ソース言語が残っている場合は失敗
-        if contains_language(result, src_lang):
-            return (global_idx, "FAILED_TRANSLATION")
-        
-        return (global_idx, result)
-    except Exception as e:
-        return (global_idx, f"ERROR: {e}")
 
-def translate_batch_parallel_ordered(batch_with_indices, src_lang, tgt_lang, max_workers=16, timeout=30):
+async def translate_single_async(session, global_idx, src_text, src_lang, tgt_lang, semaphore, timeout=60):
+    """単一テキストを非同期で翻訳"""
+    async with semaphore:
+        prompt = create_prompt(src_text, src_lang, tgt_lang)
+        
+        payload = {
+            "model": MODEL_NAME,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 256,
+            "temperature": 0.1,
+        }
+        
+        try:
+            async with session.post(VLLM_URL, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                if resp.status != 200:
+                    return (global_idx, f"ERROR: HTTP {resp.status}")
+                
+                data = await resp.json()
+                result = data["choices"][0]["message"]["content"].strip()
+                
+                # 改行を除去
+                result = result.replace("\n", " ").strip()
+                
+                # ソース言語が残っている場合は失敗
+                if contains_language(result, src_lang):
+                    return (global_idx, "FAILED_TRANSLATION")
+                
+                return (global_idx, result)
+        except asyncio.TimeoutError:
+            return (global_idx, "ERROR: Timeout")
+        except Exception as e:
+            return (global_idx, f"ERROR: {e}")
+
+
+async def translate_batch_async(batch_with_indices, src_lang, tgt_lang, max_concurrent=128, timeout=60):
     """
-    並列でバッチ翻訳（順序保証版）
+    非同期でバッチ翻訳（GPU使用率最大化）
     
     Args:
         batch_with_indices: [(global_idx, text), ...] のリスト
         src_lang: ソース言語
         tgt_lang: ターゲット言語
-        max_workers: 並列ワーカー数
+        max_concurrent: 同時リクエスト数（vLLMのcontinuous batchingを活かす）
         timeout: タイムアウト秒数
     
     Returns:
         [(global_idx, translation), ...] のリスト（ソート済み）
     """
-    results = []
+    semaphore = asyncio.Semaphore(max_concurrent)
     
-    # タスクリスト作成
-    tasks = [
-        (global_idx, text, src_lang, tgt_lang, timeout)
-        for global_idx, text in batch_with_indices
-    ]
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(translate_single, task) for task in tasks]
+    connector = aiohttp.TCPConnector(limit=max_concurrent, limit_per_host=max_concurrent)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = [
+            translate_single_async(session, idx, text, src_lang, tgt_lang, semaphore, timeout)
+            for idx, text in batch_with_indices
+        ]
         
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-                results.append(result)
-            except Exception as e:
-                # このケースは通常発生しないが念のため
-                pass
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # エラーハンドリング
+    processed_results = []
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            idx = batch_with_indices[i][0]
+            processed_results.append((idx, f"ERROR: {result}"))
+        else:
+            processed_results.append(result)
     
     # インデックスでソート
-    results.sort(key=lambda x: x[0])
-    return results
+    processed_results.sort(key=lambda x: x[0])
+    return processed_results
+
 
 def check_vllm_server():
     """vLLMサーバーの起動確認"""
@@ -132,47 +142,19 @@ def check_vllm_server():
     except:
         return False
 
-def main():
-    parser = argparse.ArgumentParser(description="Qwen2.5-7B + vLLMを使用した教師データ生成")
-    
-    # 言語設定
-    parser.add_argument("--src_lang", type=str, required=True, 
-                        choices=["ja", "ko"],
-                        help="ソース言語 (ja: 日本語, ko: 韓国語)")
-    parser.add_argument("--tgt_lang", type=str, required=True,
-                        choices=["ja", "ko"],
-                        help="ターゲット言語 (ja: 日本語, ko: 韓国語)")
-    
-    # ファイルパス
-    parser.add_argument("--src_file", type=str, required=True,
-                        help="入力ファイルパス")
-    parser.add_argument("--output_file", type=str, required=True,
-                        help="出力ファイルパス")
-    
-    # 処理設定
-    parser.add_argument("--batch_size", type=int, default=32,
-                        help="バッチサイズ（並列リクエスト数）")
-    parser.add_argument("--max_workers", type=int, default=16,
-                        help="並列ワーカー数")
-    parser.add_argument("--sample_interval", type=int, default=5000,
-                        help="進捗表示の間隔")
-    parser.add_argument("--limit", type=int, default=None,
-                        help="処理行数の制限（デバッグ用）")
-    parser.add_argument("--checkpoint_interval", type=int, default=10000,
-                        help="チェックポイント保存間隔（行数）")
-    
-    args = parser.parse_args()
+
+async def main_async(args):
+    """非同期メイン処理"""
     
     print("=" * 60)
-    print("🚀 Qwen2.5-7B 教師データ生成 (v2: 順序保証)")
+    print("🚀 Qwen2.5-7B 教師データ生成 (v3: 非同期・GPU最大化)")
     print("=" * 60)
     print(f"  ソース言語: {args.src_lang} ({LANG_NAMES[args.src_lang]})")
     print(f"  ターゲット言語: {args.tgt_lang} ({LANG_NAMES[args.tgt_lang]})")
     print(f"  入力ファイル: {args.src_file}")
     print(f"  出力ファイル: {args.output_file}")
     print(f"  バッチサイズ: {args.batch_size}")
-    print(f"  並列ワーカー: {args.max_workers}")
-    print(f"  チェックポイント間隔: {args.checkpoint_interval}")
+    print(f"  同時リクエスト数: {args.max_concurrent}")
     print()
     
     # vLLMサーバー確認
@@ -183,7 +165,7 @@ def main():
         print("以下のコマンドでサーバーを起動してください:")
         print("  python -m vllm.entrypoints.openai.api_server \\")
         print("    --model Qwen/Qwen2.5-7B-Instruct --port 8000 \\")
-        print("    --gpu-memory-utilization 0.9")
+        print("    --gpu-memory-utilization 0.95")
         return 1
     print("✅ vLLMサーバー接続OK")
     print()
@@ -207,6 +189,7 @@ def main():
     checkpoint_file = args.output_file + ".checkpoint"
     start_idx = 0
     all_results = []  # (idx, translation) のリスト
+    processed_indices = set()
     
     if os.path.exists(checkpoint_file):
         print(f"🔄 チェックポイントファイル発見: {checkpoint_file}")
@@ -215,10 +198,12 @@ def main():
                 parts = line.strip().split('\t', 1)
                 if len(parts) == 2:
                     idx, translation = int(parts[0]), parts[1]
-                    all_results.append((idx, translation))
+                    if idx not in processed_indices:  # 重複排除
+                        all_results.append((idx, translation))
+                        processed_indices.add(idx)
         
         if all_results:
-            start_idx = max(idx for idx, _ in all_results) + 1
+            start_idx = max(processed_indices) + 1
             print(f"✅ {len(all_results):,}件ロード、{start_idx:,}行目から再開")
     else:
         os.makedirs(os.path.dirname(args.output_file) or '.', exist_ok=True)
@@ -234,6 +219,8 @@ def main():
     try:
         # 翻訳実行
         print(f"\n🔥 翻訳開始 ({start_idx:,}行目から)...")
+        print(f"💡 GPU使用率を最大化するため、{args.max_concurrent}リクエストを同時送信")
+        print()
         
         pbar = tqdm(
             range(start_idx, total_lines, args.batch_size),
@@ -248,22 +235,30 @@ def main():
             # (global_idx, text) のリストを作成
             batch_with_indices = []
             for i in range(batch_start, batch_end):
+                if i in processed_indices:
+                    continue  # 既に処理済み
                 text = src_lines[i] if src_lines[i] else "。"
                 batch_with_indices.append((i, text))
             
-            # 並列翻訳（順序保証）
-            results = translate_batch_parallel_ordered(
-                batch_with_indices, args.src_lang, args.tgt_lang, args.max_workers
+            if not batch_with_indices:
+                continue
+            
+            # 非同期翻訳（GPU使用率最大化）
+            results = await translate_batch_async(
+                batch_with_indices, args.src_lang, args.tgt_lang, 
+                args.max_concurrent
             )
             
             # 結果を保存
             for idx, translation in results:
-                all_results.append((idx, translation))
-                # チェックポイントに即座に書き込み
-                checkpoint_f.write(f"{idx}\t{translation}\n")
-                
-                if translation.startswith("FAILED") or translation.startswith("ERROR"):
-                    total_failed += 1
+                if idx not in processed_indices:
+                    all_results.append((idx, translation))
+                    processed_indices.add(idx)
+                    # チェックポイントに即座に書き込み
+                    checkpoint_f.write(f"{idx}\t{translation}\n")
+                    
+                    if translation.startswith("FAILED") or translation.startswith("ERROR"):
+                        total_failed += 1
             
             checkpoint_f.flush()
             total_processed = len(all_results)
@@ -271,7 +266,7 @@ def main():
             # サンプル表示
             if batch_start % args.sample_interval < args.batch_size:
                 elapsed = time.time() - start_time
-                processed_this_run = total_processed - (start_idx if start_idx > 0 else 0)
+                processed_this_run = total_processed - (len(processed_indices) - len(results)) if start_idx > 0 else total_processed
                 speed = processed_this_run / elapsed if elapsed > 0 else 0
                 remaining = total_lines - total_processed
                 eta = remaining / speed if speed > 0 else 0
@@ -287,7 +282,7 @@ def main():
             
             # プログレスバー更新
             elapsed = time.time() - start_time
-            processed_this_run = total_processed - start_idx
+            processed_this_run = total_processed - start_idx if start_idx > 0 else total_processed
             speed = processed_this_run / elapsed if elapsed > 0 else 0
             pbar.set_postfix({
                 "speed": f"{speed:.1f}/s",
@@ -304,14 +299,22 @@ def main():
     
     # 欠損チェック
     expected_indices = set(range(total_lines))
-    actual_indices = set(idx for idx, _ in all_results)
-    missing = expected_indices - actual_indices
+    missing = expected_indices - processed_indices
     
     if missing:
         print(f"⚠️ 欠損行が{len(missing)}件あります。FAILED_TRANSLATIONで埋めます...")
         for idx in missing:
             all_results.append((idx, "FAILED_TRANSLATION"))
         all_results.sort(key=lambda x: x[0])
+    
+    # 重複排除（念のため）
+    seen = set()
+    unique_results = []
+    for idx, translation in all_results:
+        if idx not in seen:
+            unique_results.append((idx, translation))
+            seen.add(idx)
+    all_results = unique_results
     
     # ファイル書き込み
     with open(args.output_file, 'w', encoding='utf-8') as f:
@@ -347,6 +350,39 @@ def main():
         print(f"❌ 行数不一致: 出力{len(output_lines):,} != 入力{total_lines:,}")
     
     return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Qwen2.5-7B + vLLMを使用した教師データ生成（非同期版）")
+    
+    # 言語設定
+    parser.add_argument("--src_lang", type=str, required=True, 
+                        choices=["ja", "ko"],
+                        help="ソース言語 (ja: 日本語, ko: 韓国語)")
+    parser.add_argument("--tgt_lang", type=str, required=True,
+                        choices=["ja", "ko"],
+                        help="ターゲット言語 (ja: 日本語, ko: 韓国語)")
+    
+    # ファイルパス
+    parser.add_argument("--src_file", type=str, required=True,
+                        help="入力ファイルパス")
+    parser.add_argument("--output_file", type=str, required=True,
+                        help="出力ファイルパス")
+    
+    # 処理設定
+    parser.add_argument("--batch_size", type=int, default=256,
+                        help="バッチサイズ（1回のループで処理する行数）")
+    parser.add_argument("--max_concurrent", type=int, default=128,
+                        help="同時リクエスト数（GPU使用率に直結）")
+    parser.add_argument("--sample_interval", type=int, default=5000,
+                        help="進捗表示の間隔")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="処理行数の制限（デバッグ用）")
+    
+    args = parser.parse_args()
+    
+    return asyncio.run(main_async(args))
+
 
 if __name__ == "__main__":
     exit(main())
