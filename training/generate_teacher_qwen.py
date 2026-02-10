@@ -12,6 +12,8 @@ Qwen2.5-7B + vLLM を使用した教師データ生成スクリプト
      --src_lang ko --tgt_lang ja \
      --src_file data/raw/source.ko \
      --output_file data/teacher/train.ja
+
+※ v2: 行順序を保証（並列処理でも正しい順序で出力）
 """
 
 import os
@@ -56,8 +58,10 @@ def create_prompt(src_text, src_lang, tgt_lang):
 
 {tgt_name}:"""
 
-def translate_single(src_text, src_lang, tgt_lang, timeout=30):
-    """単一テキストを翻訳"""
+def translate_single(args_tuple):
+    """単一テキストを翻訳（インデックス付き）"""
+    global_idx, src_text, src_lang, tgt_lang, timeout = args_tuple
+    
     prompt = create_prompt(src_text, src_lang, tgt_lang)
     
     payload = {
@@ -77,29 +81,47 @@ def translate_single(src_text, src_lang, tgt_lang, timeout=30):
         
         # ソース言語が残っている場合は失敗
         if contains_language(result, src_lang):
-            return "FAILED_TRANSLATION"
+            return (global_idx, "FAILED_TRANSLATION")
         
-        return result
+        return (global_idx, result)
     except Exception as e:
-        return f"ERROR: {e}"
+        return (global_idx, f"ERROR: {e}")
 
-def translate_batch_parallel(batch, src_lang, tgt_lang, max_workers=8):
-    """並列でバッチ翻訳"""
-    results = [""] * len(batch)
+def translate_batch_parallel_ordered(batch_with_indices, src_lang, tgt_lang, max_workers=16, timeout=30):
+    """
+    並列でバッチ翻訳（順序保証版）
+    
+    Args:
+        batch_with_indices: [(global_idx, text), ...] のリスト
+        src_lang: ソース言語
+        tgt_lang: ターゲット言語
+        max_workers: 並列ワーカー数
+        timeout: タイムアウト秒数
+    
+    Returns:
+        [(global_idx, translation), ...] のリスト（ソート済み）
+    """
+    results = []
+    
+    # タスクリスト作成
+    tasks = [
+        (global_idx, text, src_lang, tgt_lang, timeout)
+        for global_idx, text in batch_with_indices
+    ]
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(translate_single, text, src_lang, tgt_lang): i 
-            for i, text in enumerate(batch)
-        }
+        futures = [executor.submit(translate_single, task) for task in tasks]
         
         for future in as_completed(futures):
-            idx = futures[future]
             try:
-                results[idx] = future.result()
+                result = future.result()
+                results.append(result)
             except Exception as e:
-                results[idx] = f"ERROR: {e}"
+                # このケースは通常発生しないが念のため
+                pass
     
+    # インデックスでソート
+    results.sort(key=lambda x: x[0])
     return results
 
 def check_vllm_server():
@@ -132,15 +154,17 @@ def main():
                         help="バッチサイズ（並列リクエスト数）")
     parser.add_argument("--max_workers", type=int, default=16,
                         help="並列ワーカー数")
-    parser.add_argument("--sample_interval", type=int, default=1000,
+    parser.add_argument("--sample_interval", type=int, default=5000,
                         help="進捗表示の間隔")
     parser.add_argument("--limit", type=int, default=None,
                         help="処理行数の制限（デバッグ用）")
+    parser.add_argument("--checkpoint_interval", type=int, default=10000,
+                        help="チェックポイント保存間隔（行数）")
     
     args = parser.parse_args()
     
     print("=" * 60)
-    print("🚀 Qwen2.5-7B 教師データ生成")
+    print("🚀 Qwen2.5-7B 教師データ生成 (v2: 順序保証)")
     print("=" * 60)
     print(f"  ソース言語: {args.src_lang} ({LANG_NAMES[args.src_lang]})")
     print(f"  ターゲット言語: {args.tgt_lang} ({LANG_NAMES[args.tgt_lang]})")
@@ -148,6 +172,7 @@ def main():
     print(f"  出力ファイル: {args.output_file}")
     print(f"  バッチサイズ: {args.batch_size}")
     print(f"  並列ワーカー: {args.max_workers}")
+    print(f"  チェックポイント間隔: {args.checkpoint_interval}")
     print()
     
     # vLLMサーバー確認
@@ -171,74 +196,132 @@ def main():
     with open(args.src_file, 'r', encoding='utf-8') as f:
         src_lines = [line.strip() for line in f]
     
+    total_lines = len(src_lines)
     if args.limit:
         src_lines = src_lines[:args.limit]
+        total_lines = len(src_lines)
     
-    print(f"✅ {len(src_lines):,}行読み込み完了")
+    print(f"✅ {total_lines:,}行読み込み完了")
     
-    # 再開処理
+    # 再開処理: チェックポイントファイルを確認
+    checkpoint_file = args.output_file + ".checkpoint"
     start_idx = 0
-    if os.path.exists(args.output_file):
-        with open(args.output_file, 'r', encoding='utf-8') as f:
-            start_idx = sum(1 for _ in f)
-        print(f"🔄 {start_idx:,}行目から再開します...")
+    all_results = []  # (idx, translation) のリスト
+    
+    if os.path.exists(checkpoint_file):
+        print(f"🔄 チェックポイントファイル発見: {checkpoint_file}")
+        with open(checkpoint_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                parts = line.strip().split('\t', 1)
+                if len(parts) == 2:
+                    idx, translation = int(parts[0]), parts[1]
+                    all_results.append((idx, translation))
+        
+        if all_results:
+            start_idx = max(idx for idx, _ in all_results) + 1
+            print(f"✅ {len(all_results):,}件ロード、{start_idx:,}行目から再開")
     else:
-        os.makedirs(os.path.dirname(args.output_file), exist_ok=True)
+        os.makedirs(os.path.dirname(args.output_file) or '.', exist_ok=True)
     
     # 統計
-    total_processed = start_idx
-    total_failed = 0
+    total_processed = len(all_results)
+    total_failed = sum(1 for _, t in all_results if t.startswith("FAILED") or t.startswith("ERROR"))
     start_time = time.time()
     
-    # 翻訳実行
-    print(f"\n🔥 翻訳開始...")
-    with open(args.output_file, 'a', encoding='utf-8') as f:
+    # チェックポイントファイルを追記モードで開く
+    checkpoint_f = open(checkpoint_file, 'a', encoding='utf-8')
+    
+    try:
+        # 翻訳実行
+        print(f"\n🔥 翻訳開始 ({start_idx:,}行目から)...")
+        
         pbar = tqdm(
-            range(start_idx, len(src_lines), args.batch_size),
+            range(start_idx, total_lines, args.batch_size),
             initial=start_idx // args.batch_size,
-            total=len(src_lines) // args.batch_size,
+            total=(total_lines + args.batch_size - 1) // args.batch_size,
             desc="翻訳中"
         )
         
-        for i in pbar:
-            batch = src_lines[i : i + args.batch_size]
+        for batch_start in pbar:
+            batch_end = min(batch_start + args.batch_size, total_lines)
             
-            # 空行対策
-            batch = [line if line else "。" for line in batch]
+            # (global_idx, text) のリストを作成
+            batch_with_indices = []
+            for i in range(batch_start, batch_end):
+                text = src_lines[i] if src_lines[i] else "。"
+                batch_with_indices.append((i, text))
             
-            # 並列翻訳
-            results = translate_batch_parallel(
-                batch, args.src_lang, args.tgt_lang, args.max_workers
+            # 並列翻訳（順序保証）
+            results = translate_batch_parallel_ordered(
+                batch_with_indices, args.src_lang, args.tgt_lang, args.max_workers
             )
             
-            # 統計更新
-            for res in results:
-                if res.startswith("FAILED") or res.startswith("ERROR"):
+            # 結果を保存
+            for idx, translation in results:
+                all_results.append((idx, translation))
+                # チェックポイントに即座に書き込み
+                checkpoint_f.write(f"{idx}\t{translation}\n")
+                
+                if translation.startswith("FAILED") or translation.startswith("ERROR"):
                     total_failed += 1
-            total_processed += len(results)
+            
+            checkpoint_f.flush()
+            total_processed = len(all_results)
             
             # サンプル表示
-            if i % args.sample_interval < args.batch_size:
+            if batch_start % args.sample_interval < args.batch_size:
                 elapsed = time.time() - start_time
-                speed = total_processed / elapsed if elapsed > 0 else 0
-                eta = (len(src_lines) - total_processed) / speed if speed > 0 else 0
+                processed_this_run = total_processed - (start_idx if start_idx > 0 else 0)
+                speed = processed_this_run / elapsed if elapsed > 0 else 0
+                remaining = total_lines - total_processed
+                eta = remaining / speed if speed > 0 else 0
                 
-                print(f"\n--- [進捗: {total_processed:,}/{len(src_lines):,}] ---")
-                print(f"原文 ({args.src_lang}): {batch[0]}")
-                print(f"翻訳 ({args.tgt_lang}): {results[0]}")
+                sample_idx, sample_trans = results[0] if results else (0, "N/A")
+                sample_src = src_lines[sample_idx] if sample_idx < len(src_lines) else "N/A"
+                
+                print(f"\n--- [進捗: {total_processed:,}/{total_lines:,} ({100*total_processed/total_lines:.1f}%)] ---")
+                print(f"原文 ({args.src_lang}): {sample_src[:60]}")
+                print(f"翻訳 ({args.tgt_lang}): {sample_trans[:60]}")
                 print(f"速度: {speed:.1f}行/秒, 失敗: {total_failed:,}, ETA: {eta/60:.1f}分")
                 print("-" * 50)
             
-            # 結果を書き込み
-            for res in results:
-                f.write(res + "\n")
-            f.flush()
-            
             # プログレスバー更新
+            elapsed = time.time() - start_time
+            processed_this_run = total_processed - start_idx
+            speed = processed_this_run / elapsed if elapsed > 0 else 0
             pbar.set_postfix({
-                "speed": f"{total_processed / (time.time() - start_time):.1f}/s",
-                "failed": total_failed
+                "speed": f"{speed:.1f}/s",
+                "failed": total_failed,
+                "done": f"{total_processed:,}"
             })
+    
+    finally:
+        checkpoint_f.close()
+    
+    # 最終出力: ソートして書き込み
+    print(f"\n📝 最終出力ファイル生成中...")
+    all_results.sort(key=lambda x: x[0])
+    
+    # 欠損チェック
+    expected_indices = set(range(total_lines))
+    actual_indices = set(idx for idx, _ in all_results)
+    missing = expected_indices - actual_indices
+    
+    if missing:
+        print(f"⚠️ 欠損行が{len(missing)}件あります。FAILED_TRANSLATIONで埋めます...")
+        for idx in missing:
+            all_results.append((idx, "FAILED_TRANSLATION"))
+        all_results.sort(key=lambda x: x[0])
+    
+    # ファイル書き込み
+    with open(args.output_file, 'w', encoding='utf-8') as f:
+        for idx, translation in all_results:
+            f.write(translation + "\n")
+    
+    # チェックポイントファイル削除
+    if os.path.exists(checkpoint_file):
+        os.remove(checkpoint_file)
+        print(f"✅ チェックポイントファイル削除: {checkpoint_file}")
     
     # 完了レポート
     elapsed = time.time() - start_time
@@ -246,12 +329,22 @@ def main():
     print("=" * 60)
     print("✅ 翻訳完了")
     print("=" * 60)
-    print(f"  総処理行数: {total_processed:,}")
-    print(f"  失敗数: {total_failed:,} ({100*total_failed/total_processed:.1f}%)")
+    print(f"  総処理行数: {len(all_results):,}")
+    print(f"  失敗数: {total_failed:,} ({100*total_failed/len(all_results):.1f}%)")
     print(f"  所要時間: {elapsed/60:.1f}分")
-    print(f"  平均速度: {total_processed/elapsed:.1f}行/秒")
+    print(f"  平均速度: {(len(all_results) - start_idx)/elapsed:.1f}行/秒")
     print(f"  出力ファイル: {args.output_file}")
     print()
+    
+    # 検証
+    print("🔍 アラインメント検証...")
+    with open(args.output_file, 'r', encoding='utf-8') as f:
+        output_lines = f.readlines()
+    
+    if len(output_lines) == total_lines:
+        print(f"✅ 行数一致: {len(output_lines):,} = {total_lines:,}")
+    else:
+        print(f"❌ 行数不一致: 出力{len(output_lines):,} != 入力{total_lines:,}")
     
     return 0
 
