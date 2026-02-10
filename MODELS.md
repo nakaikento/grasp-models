@@ -20,7 +20,8 @@
 | モデル | サイズ | 処理時間 | CER | 評価 |
 |--------|--------|----------|-----|------|
 | sherpa-onnx Korean (int8) | ~70MB | 高速 | 62.3% | ❌ 実用困難 |
-| **Whisper base (Korean)** | 139MB | ~55s (CPU) | **17.6%** | 🟡 良好 |
+| Whisper base (Korean) | 139MB | ~55s (CPU) | 17.6% | 🟡 良好 |
+| **Whisper base-q8 (Korean)** | **78MB** | ~59s (CPU) | **19.5%** | ✅ 推奨 |
 | sherpa-onnx ReazonSpeech (FP32) | ~200MB | 高速 | 53.6% | ❌ 実用困難 |
 | Whisper tiny | 73MB | ~15s (CPU) | 36.0% | ❌ 要改善 |
 | Whisper base | 139MB | ~20s (CPU) | 20.8% | 🟠 許容範囲 |
