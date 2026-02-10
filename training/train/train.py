@@ -1,45 +1,27 @@
 #!/usr/bin/env python3
 """
-MarianMT 双方向学習スクリプト
+MarianMT 学習スクリプト
 
-Knowledge Distillation対応の翻訳モデル学習
+Knowledge Distillation: 日本語 → 教師韓国語 で学習
 
 Usage:
-    # 日本語 → 韓国語
-    python training/train_pair.py --src-lang ja --tgt-lang ko
-    
-    # 韓国語 → 日本語
-    python training/train_pair.py --src-lang ko --tgt-lang ja
-
-Arguments:
-    --src-lang: ソース言語（ja/ko）
-    --tgt-lang: ターゲット言語（ja/ko）
-    --use-teacher: 教師データを使用（デフォルト: True）
-    --generate-teacher: 教師データを自動生成
-    --epochs: エポック数（デフォルト: 10）
-    --batch-size: バッチサイズ（デフォルト: 64）
-    --learning-rate: 学習率（デフォルト: 3e-4）
-    --resume: チェックポイントから再開
+    python training/train.py
+    python training/train.py --use-opus-target  # OPUS韓国語をターゲットに（比較用）
 
 Input:
-    data/splits/{train,val,test}.{src_lang}
-    data/splits/{train,val,test}.{tgt_lang} (OPUS, 評価用)
-    data/teacher/train_{src_lang}_{tgt_lang}.{tgt_lang} (教師翻訳)
-
+    data/splits/train.ja
+    data/teacher/train.ko (教師翻訳) or data/splits/train.ko (OPUS)
 Output:
-    models/{src_lang}-{tgt_lang}/
+    models/ja-ko/
 """
 
 import os
-import sys
 import numpy as np
 import torch
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List
 import argparse
-import subprocess
-from tqdm import tqdm
 
 from datasets import Dataset, DatasetDict
 from transformers import (
@@ -51,14 +33,14 @@ from transformers import (
     Seq2SeqTrainingArguments,
     EarlyStoppingCallback,
     DataCollatorForSeq2Seq,
-    TrainerCallback,
 )
 import sentencepiece as spm
 import evaluate
 
 # 設定をインポート
+import sys
 sys.path.append(str(Path(__file__).parent.parent))
-from training.config import ModelConfig, TrainingConfig
+from training.train.config import ModelConfig, TrainingConfig
 
 
 class SPMTokenizer:
@@ -200,109 +182,43 @@ class SPMTokenizer:
         return result
 
 
-class ProgressCallback(TrainerCallback):
-    """学習進捗を表示するコールバック"""
-    
-    def __init__(self):
-        self.pbar = None
-    
-    def on_train_begin(self, args, state, control, **kwargs):
-        """学習開始"""
-        total_steps = state.max_steps
-        self.pbar = tqdm(total=total_steps, desc="Training", unit="step")
-    
-    def on_step_end(self, args, state, control, **kwargs):
-        """ステップ終了"""
-        if self.pbar:
-            self.pbar.update(1)
-            # 最新のログを表示
-            if state.log_history:
-                latest_log = state.log_history[-1]
-                postfix = {}
-                if 'loss' in latest_log:
-                    postfix['loss'] = f"{latest_log['loss']:.4f}"
-                if 'eval_bleu' in latest_log:
-                    postfix['BLEU'] = f"{latest_log['eval_bleu']:.2f}"
-                self.pbar.set_postfix(postfix)
-    
-    def on_train_end(self, args, state, control, **kwargs):
-        """学習終了"""
-        if self.pbar:
-            self.pbar.close()
-
-
-def generate_teacher_data(src_lang: str, tgt_lang: str, data_dir: Path, teacher_dir: Path):
-    """教師データを生成"""
-    print(f"\n{'='*50}")
-    print(f"教師データ生成: {src_lang} → {tgt_lang}")
-    print(f"{'='*50}")
-    
-    teacher_dir.mkdir(parents=True, exist_ok=True)
-    
-    src_file = data_dir / f"train.{src_lang}"
-    output_file = teacher_dir / f"train_{src_lang}_{tgt_lang}.{tgt_lang}"
-    
-    cmd = [
-        "python3", "training/generate_teacher_data.py",
-        "--src-lang", src_lang,
-        "--tgt-lang", tgt_lang,
-        "--src-file", str(src_file),
-        "--output-file", str(output_file)
-    ]
-    
-    print(f"実行: {' '.join(cmd)}")
-    result = subprocess.run(cmd, check=True)
-    
-    if result.returncode == 0:
-        print(f"✅ 教師データ生成完了: {output_file}")
-    else:
-        raise RuntimeError(f"教師データ生成に失敗しました（exit code: {result.returncode}）")
-
-
 def load_data(
-    src_lang: str,
-    tgt_lang: str,
     data_dir: Path,
     teacher_dir: Optional[Path],
-    use_teacher: bool = True
+    use_opus_target: bool = False
 ) -> DatasetDict:
     """データをロード"""
     
-    # ソース言語
-    with open(data_dir / f"train.{src_lang}", 'r', encoding='utf-8') as f:
-        train_src = [line.strip() for line in f]
-    with open(data_dir / f"val.{src_lang}", 'r', encoding='utf-8') as f:
-        val_src = [line.strip() for line in f]
-    with open(data_dir / f"test.{src_lang}", 'r', encoding='utf-8') as f:
-        test_src = [line.strip() for line in f]
+    # 日本語（ソース）
+    with open(data_dir / "train.ja", 'r', encoding='utf-8') as f:
+        train_ja = [line.strip() for line in f]
+    with open(data_dir / "val.ja", 'r', encoding='utf-8') as f:
+        val_ja = [line.strip() for line in f]
+    with open(data_dir / "test.ja", 'r', encoding='utf-8') as f:
+        test_ja = [line.strip() for line in f]
     
-    # ターゲット言語
-    if use_teacher and teacher_dir:
-        print(f"ターゲット: 教師翻訳（{teacher_dir}/train_{src_lang}_{tgt_lang}.{tgt_lang}）")
-        tgt_train_path = teacher_dir / f"train_{src_lang}_{tgt_lang}.{tgt_lang}"
-        if not tgt_train_path.exists():
-            raise FileNotFoundError(
-                f"教師データが見つかりません: {tgt_train_path}\n"
-                f"--generate-teacher を使って生成してください"
-            )
+    # 韓国語（ターゲット）
+    if use_opus_target:
+        print("ターゲット: OPUS韓国語")
+        ko_train_path = data_dir / "train.ko"
     else:
-        print(f"ターゲット: OPUS（{data_dir}/train.{tgt_lang}）")
-        tgt_train_path = data_dir / f"train.{tgt_lang}"
+        print("ターゲット: 教師翻訳（NLLB/M2M100）")
+        ko_train_path = teacher_dir / "train.ko"
     
-    with open(tgt_train_path, 'r', encoding='utf-8') as f:
-        train_tgt = [line.strip() for line in f]
+    with open(ko_train_path, 'r', encoding='utf-8') as f:
+        train_ko = [line.strip() for line in f]
     
     # val/testは常にOPUS（評価用）
-    with open(data_dir / f"val.{tgt_lang}", 'r', encoding='utf-8') as f:
-        val_tgt = [line.strip() for line in f]
-    with open(data_dir / f"test.{tgt_lang}", 'r', encoding='utf-8') as f:
-        test_tgt = [line.strip() for line in f]
+    with open(data_dir / "val.ko", 'r', encoding='utf-8') as f:
+        val_ko = [line.strip() for line in f]
+    with open(data_dir / "test.ko", 'r', encoding='utf-8') as f:
+        test_ko = [line.strip() for line in f]
     
     # Dataset作成
     dataset = DatasetDict({
-        'train': Dataset.from_dict({src_lang: train_src, tgt_lang: train_tgt}),
-        'validation': Dataset.from_dict({src_lang: val_src, tgt_lang: val_tgt}),
-        'test': Dataset.from_dict({src_lang: test_src, tgt_lang: test_tgt}),
+        'train': Dataset.from_dict({'ja': train_ja, 'ko': train_ko}),
+        'validation': Dataset.from_dict({'ja': val_ja, 'ko': val_ko}),
+        'test': Dataset.from_dict({'ja': test_ja, 'ko': test_ko}),
     })
     
     print(f"Train: {len(dataset['train']):,}")
@@ -344,17 +260,17 @@ def create_model(config: ModelConfig, vocab_size: int) -> MarianMTModel:
     return model
 
 
-def preprocess_function(examples, src_lang, tgt_lang, tokenizer, max_length=128):
+def preprocess_function(examples, tokenizer, max_length=128):
     """データを前処理"""
     inputs = tokenizer(
-        examples[src_lang],
+        examples['ja'],
         max_length=max_length,
         truncation=True,
         padding=False,
     )
     
     targets = tokenizer(
-        examples[tgt_lang],
+        examples['ko'],
         max_length=max_length,
         truncation=True,
         padding=False,
@@ -396,87 +312,65 @@ def compute_metrics(eval_preds, tokenizer):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MarianMT双方向学習")
-    parser.add_argument("--src-lang", type=str, required=True, choices=["ja", "ko"],
-                        help="ソース言語")
-    parser.add_argument("--tgt-lang", type=str, required=True, choices=["ja", "ko"],
-                        help="ターゲット言語")
-    parser.add_argument("--use-teacher", action="store_true", default=True,
-                        help="教師データを使用（デフォルト: True）")
-    parser.add_argument("--no-teacher", dest="use_teacher", action="store_false",
-                        help="OPUS生データで学習（教師データなし）")
-    parser.add_argument("--generate-teacher", action="store_true",
-                        help="教師データを自動生成してから学習")
+    parser = argparse.ArgumentParser(description="MarianMT学習")
+    parser.add_argument("--use-opus-target", action="store_true",
+                        help="OPUS韓国語をターゲットに使用（教師翻訳の代わり）")
     parser.add_argument("--resume", type=str, default=None,
                         help="チェックポイントから再開")
+    parser.add_argument("--output-dir", type=str, default="models/ja-ko")
     parser.add_argument("--data-dir", type=str, default="data/splits",
-                        help="データディレクトリ")
-    parser.add_argument("--teacher-dir", type=str, default="data/teacher",
-                        help="教師データディレクトリ")
-    parser.add_argument("--tokenizer", type=str, default="data/tokenized/spm.model",
+                        help="データディレクトリ（train.ja, train.ko等）")
+    parser.add_argument("--tokenizer", type=str, default=None,
                         help="トークナイザーパス（spm.model）")
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--num-workers", type=int, default=4,
                         help="DataLoaderのワーカー数")
     args = parser.parse_args()
     
-    # 言語ペアチェック
-    if args.src_lang == args.tgt_lang:
-        raise ValueError("ソース言語とターゲット言語は異なる必要があります")
-    
     print("=" * 50)
-    print(f"MarianMT 学習: {args.src_lang} → {args.tgt_lang}")
+    print("MarianMT 学習")
     print("=" * 50)
-    
-    # パス設定
-    data_dir = Path(args.data_dir)
-    teacher_dir = Path(args.teacher_dir)
-    output_dir = Path(f"models/{args.src_lang}-{args.tgt_lang}")
-    
-    # 教師データ生成
-    if args.generate_teacher:
-        generate_teacher_data(args.src_lang, args.tgt_lang, data_dir, teacher_dir)
     
     # 設定
     model_config = ModelConfig()
     train_config = TrainingConfig()
     
     # 引数で上書き
-    train_config.output_dir = output_dir
+    train_config.output_dir = Path(args.output_dir)
     train_config.num_train_epochs = args.epochs
     train_config.per_device_train_batch_size = args.batch_size
     train_config.learning_rate = args.learning_rate
     
     # デバイス確認
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"\nデバイス: {device}")
+    print(f"デバイス: {device}")
     if device == "cuda":
         print(f"GPU: {torch.cuda.get_device_name(0)}")
-        print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
     
     # トークナイザー
-    print(f"\nトークナイザーをロード: {args.tokenizer}")
-    tokenizer = SPMTokenizer(args.tokenizer)
+    tokenizer_path = args.tokenizer if args.tokenizer else str(train_config.tokenizer_path)
+    print(f"\nトークナイザーをロード: {tokenizer_path}")
+    tokenizer = SPMTokenizer(tokenizer_path)
     print(f"Vocab size: {tokenizer.vocab_size}")
     
     # データ
     print(f"\nデータをロード...")
+    data_dir = Path(args.data_dir)
+    teacher_dir = None  # data_dir内のtrain.koを使用
     dataset = load_data(
-        args.src_lang,
-        args.tgt_lang,
         data_dir,
-        teacher_dir if args.use_teacher else None,
-        args.use_teacher
+        teacher_dir,
+        use_opus_target=True  # data_dir内のファイルを直接使用
     )
     
     # 前処理
     print(f"\n前処理中...")
     tokenized_dataset = dataset.map(
-        lambda x: preprocess_function(x, args.src_lang, args.tgt_lang, tokenizer, model_config.max_length),
+        lambda x: preprocess_function(x, tokenizer, model_config.max_length),
         batched=True,
-        remove_columns=[args.src_lang, args.tgt_lang],
+        remove_columns=['ja', 'ko'],
         desc="Tokenizing"
     )
     
@@ -529,7 +423,7 @@ def main():
         fp16=train_config.fp16 and device == "cuda",
         dataloader_num_workers=args.num_workers if device == "cuda" else 0,
         logging_steps=train_config.logging_steps,
-        report_to=["none"],  # wandb無効化
+        report_to=train_config.report_to,
         
         # 再開
         resume_from_checkpoint=args.resume,
@@ -543,33 +437,16 @@ def main():
         eval_dataset=tokenized_dataset['validation'],
         data_collator=data_collator,
         compute_metrics=lambda x: compute_metrics(x, tokenizer),
-        callbacks=[
-            EarlyStoppingCallback(early_stopping_patience=train_config.early_stopping_patience),
-            ProgressCallback(),
-        ],
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=train_config.early_stopping_patience)],
     )
     
     # 学習
     print(f"\n学習開始...")
-    print(f"  言語ペア: {args.src_lang} → {args.tgt_lang}")
     print(f"  エポック: {train_config.num_train_epochs}")
     print(f"  バッチサイズ: {train_config.per_device_train_batch_size} x {train_config.gradient_accumulation_steps} = {train_config.per_device_train_batch_size * train_config.gradient_accumulation_steps}")
     print(f"  学習率: {train_config.learning_rate}")
-    print(f"  出力: {train_config.output_dir}")
-    print()
     
-    try:
-        trainer.train(resume_from_checkpoint=args.resume)
-    except KeyboardInterrupt:
-        print("\n⚠️ 学習が中断されました")
-        print(f"チェックポイント: {train_config.output_dir}")
-        print(f"再開するには: --resume {train_config.output_dir}/checkpoint-XXXX")
-        return
-    except Exception as e:
-        print(f"\n❌ エラーが発生しました: {e}")
-        import traceback
-        traceback.print_exc()
-        return
+    trainer.train(resume_from_checkpoint=args.resume)
     
     # 保存
     print(f"\nモデルを保存: {train_config.output_dir}")
@@ -577,22 +454,14 @@ def main():
     
     # トークナイザーも保存（推論用）
     import shutil
-    shutil.copy(args.tokenizer, train_config.output_dir / "spm.model")
-    print(f"トークナイザーをコピー: {args.tokenizer} → {train_config.output_dir}/spm.model")
+    shutil.copy(tokenizer_path, train_config.output_dir / "spm.model")
     
     # 最終評価
     print(f"\nテストセットで評価...")
     results = trainer.evaluate(tokenized_dataset['test'])
-    print(f"\n{'='*50}")
-    print(f"✅ 学習完了！")
-    print(f"{'='*50}")
     print(f"Test BLEU: {results['eval_bleu']:.2f}")
-    print(f"出力: {train_config.output_dir}")
     
-    # ONNX変換のヒント
-    print(f"\n次のステップ:")
-    print(f"  1. ONNX変換: python training/convert_to_onnx.py --model-dir {train_config.output_dir}")
-    print(f"  2. 量子化: python training/quantize_onnx.py --model-dir {train_config.output_dir}")
+    print("\n完了！")
 
 
 if __name__ == "__main__":
