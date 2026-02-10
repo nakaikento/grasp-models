@@ -7,11 +7,11 @@ Qwen教師データを使用してMarianMTをファインチューニング
 - Knowledge Distillation方式
 
 使用方法:
-    python train_marian_ko_ja.py \
+    python train_marian_qwen_ko_ja.py \
         --src_file ../data/raw/OpenSubtitles.ja-ko.ko \
-        --tgt_file ../data/teacher/qwen_train.ja \
+        --tgt_file ../data/teacher/qwen_train_v3.ja \
         --output_dir ../models/marian-ko-ja-finetuned \
-        --epochs 3
+        --epochs 3 --batch_size 64 --fp16
 """
 
 import argparse
@@ -61,8 +61,8 @@ class FilterStats:
 class DataFilter:
     """低品質データをフィルタリング"""
     
-    # 純英語行のパターン
-    PURE_ENGLISH_PATTERN = re.compile(r'^[A-Za-z0-9\s.,!?\-\'"()]+$')
+    # 日本語文字パターン（ひらがな、カタカナ、漢字）
+    JAPANESE_PATTERN = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]')
     
     # 5文字以上の連続英語（固有名詞以外）
     LONG_ENGLISH_PATTERN = re.compile(r'[A-Za-z]{5,}')
@@ -70,12 +70,19 @@ class DataFilter:
     # アラビア文字
     ARABIC_PATTERN = re.compile(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF؟]')
     
+    # 中国語簡体字・フレーズ（日本語で使わない表現）
+    CHINESE_SIMPLIFIED_PATTERN = re.compile(r'[这那您们个为与关于让给对但却]|事实上|怎么样|不要|可以|什么|没有|知道')
+    
+    # 文字化け・ゴミパターン
+    GARBAGE_PATTERN = re.compile(r'_{3,}|[A-Za-z_]{15,}|FAILED_TRANSLATION|ERROR_')
+    
     # 許可する英語（固有名詞、一般的な略語）
     ALLOWED_ENGLISH = {
         'OK', 'TV', 'CD', 'DVD', 'PC', 'FBI', 'CIA', 'DNA', 'GPS', 'VIP',
         'iPhone', 'iPad', 'Google', 'Facebook', 'Twitter', 'YouTube',
-        'Mr', 'Mrs', 'Dr', 'Jr', 'Sr', 'vs', 'etc', 'No', 'OK',
+        'Mr', 'Mrs', 'Dr', 'Jr', 'Sr', 'vs', 'etc', 'No',
         'LOVE', 'HAPPY', 'NEW', 'GOOD', 'BAD', 'THE', 'AND', 'FOR',
+        'Hello', 'Sorry', 'Bye', 'Yes', 'Just', 'Well',
     }
     
     def __init__(self, max_length: int = 256):
@@ -94,8 +101,13 @@ class DataFilter:
         # ターゲット（日本語）のチェック
         tgt = tgt.strip()
         
-        # 純英語行
-        if self.PURE_ENGLISH_PATTERN.match(tgt):
+        # FAILED_TRANSLATION / 文字化けチェック
+        if self.GARBAGE_PATTERN.search(tgt):
+            self.stats.pure_english += 1  # FAILEDも純英語カウントに含める
+            return False
+        
+        # 日本語文字が含まれているか（含まれていなければ純英語扱い）
+        if not self.JAPANESE_PATTERN.search(tgt):
             self.stats.pure_english += 1
             return False
         
@@ -104,11 +116,17 @@ class DataFilter:
             self.stats.arabic_chars += 1
             return False
         
+        # 中国語簡体字（日本語にない漢字）
+        if self.CHINESE_SIMPLIFIED_PATTERN.search(tgt):
+            self.stats.english_mixed += 1  # 中国語も英語混入カウントに含める
+            return False
+        
         # 長い英語が含まれている（許可リスト以外）
         english_matches = self.LONG_ENGLISH_PATTERN.findall(tgt)
         if english_matches:
             # 許可リストにない英語があればフィルタ
-            non_allowed = [m for m in english_matches if m.upper() not in self.ALLOWED_ENGLISH]
+            non_allowed = [m for m in english_matches 
+                          if m not in self.ALLOWED_ENGLISH and m.upper() not in self.ALLOWED_ENGLISH]
             if non_allowed:
                 self.stats.english_mixed += 1
                 return False
@@ -153,11 +171,11 @@ def load_and_filter_data(
     logger.info(f"📂 ソースファイル: {src_file}")
     logger.info(f"📂 ターゲットファイル: {tgt_file}")
     
-    # ファイル読み込み
+    # ファイル読み込み（CR等の特殊文字を除去）
     with open(src_file, 'r', encoding='utf-8') as f:
-        src_lines = f.readlines()
+        src_lines = [line.replace('\r', '').replace('\x85', '') for line in f.readlines()]
     with open(tgt_file, 'r', encoding='utf-8') as f:
-        tgt_lines = f.readlines()
+        tgt_lines = [line.replace('\r', '').replace('\x85', '') for line in f.readlines()]
     
     assert len(src_lines) == len(tgt_lines), \
         f"行数が一致しません: src={len(src_lines)}, tgt={len(tgt_lines)}"
