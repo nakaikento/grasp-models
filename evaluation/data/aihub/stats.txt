@@ -1,0 +1,8 @@
+Dataset: AI Hub Ko-Ja Translation
+Sources: aihub-546, aihub-71263
+Seed: 71263
+サンプル数: 10000
+日本語平均長: 23.1文字
+日本語最小/最大: 5/139文字
+韓国語平均長: 24.4文字
+韓国語最小/最大: 5/151文字
