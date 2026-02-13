@@ -9,18 +9,18 @@ OpenSubtitlesの約100万サンプルの大規模生成を想定。
     # 基本実行（OpenSubtitles全データ）
     python generate_qwen72b_awq.py \
         --input data/raw/OpenSubtitles.ja-ko.ko \
-        --output data/teacher/OpenSubtitles.ja-ko.ja
+        --output data/teacher/OpenSubtitles-Qwen72B.ja-ko.ja
 
     # サンプル数指定
     python generate_qwen72b_awq.py \
         --input data/raw/OpenSubtitles.ja-ko.ko \
-        --output data/teacher/OpenSubtitles.ja-ko.ja \
+        --output data/teacher/OpenSubtitles-Qwen72B.ja-ko.ja \
         --limit 100000
 
     # 再開（前回の続きから）
     python generate_qwen72b_awq.py \
         --input data/raw/OpenSubtitles.ja-ko.ko \
-        --output data/teacher/OpenSubtitles.ja-ko.ja \
+        --output data/teacher/OpenSubtitles-Qwen72B.ja-ko.ja \
         --resume
 
 必要環境:
@@ -184,13 +184,13 @@ def main():
         epilog="""
 例:
     # 基本実行
-    python generate_qwen72b_awq.py -i data/raw/OpenSubtitles.ja-ko.ko -o data/teacher/OpenSubtitles.ja-ko.ja
+    python generate_qwen72b_awq.py -i data/raw/OpenSubtitles.ja-ko.ko -o data/teacher/OpenSubtitles-Qwen72B.ja-ko.ja
     
     # 10万件のみ生成
-    python generate_qwen72b_awq.py -i data/raw/OpenSubtitles.ja-ko.ko -o data/teacher/OpenSubtitles.ja-ko.ja -n 100000
+    python generate_qwen72b_awq.py -i data/raw/OpenSubtitles.ja-ko.ko -o data/teacher/OpenSubtitles-Qwen72B.ja-ko.ja -n 100000
     
     # 中断後の再開
-    python generate_qwen72b_awq.py -i data/raw/OpenSubtitles.ja-ko.ko -o data/teacher/OpenSubtitles.ja-ko.ja --resume
+    python generate_qwen72b_awq.py -i data/raw/OpenSubtitles.ja-ko.ko -o data/teacher/OpenSubtitles-Qwen72B.ja-ko.ja --resume
 """
     )
     parser.add_argument("--input", "-i", type=str, required=True,
