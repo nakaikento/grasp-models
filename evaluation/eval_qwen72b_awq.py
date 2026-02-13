@@ -127,6 +127,7 @@ def main():
         dtype="float16",
         gpu_memory_utilization=0.9,
         max_model_len=2048,
+        enforce_eager=True,  # Skip torch.compile to avoid disk space issues
     )
     load_time = time.time() - start_load
     print(f"   モデル読み込み完了 ({load_time:.1f}秒)")
