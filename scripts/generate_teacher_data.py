@@ -177,7 +177,7 @@ def main():
     parser.add_argument("--input", "-i", type=str, required=True, help="入力データパス（ディレクトリ or ファイル）")
     parser.add_argument("--output", "-o", type=str, required=True, help="出力ファイルパス (.jsonl)")
     parser.add_argument("--limit", "-n", type=int, default=None, help="最大サンプル数")
-    parser.add_argument("--batch-size", "-b", type=int, default=64, help="バッチサイズ")
+    parser.add_argument("--batch-size", "-b", type=int, default=128, help="バッチサイズ")
     parser.add_argument("--resume", "-r", action="store_true", help="前回の続きから再開")
     parser.add_argument("--model", "-m", type=str, default=MODEL_ID, help="モデルID")
     parser.add_argument("--gpu-memory", type=float, default=0.9, help="GPU メモリ使用率")
