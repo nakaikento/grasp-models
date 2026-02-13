@@ -3,24 +3,24 @@
 Qwen2.5-72B-AWQ 教師データ生成スクリプト
 
 vLLM + AWQ量子化で高品質な韓国語→日本語翻訳データを生成する。
-約100万サンプルの大規模生成を想定。
+OpenSubtitlesの約100万サンプルの大規模生成を想定。
 
 使い方:
-    # 基本実行（AI Hub全データ）
+    # 基本実行（OpenSubtitles全データ）
     python generate_qwen72b_awq.py \
-        --input /path/to/aihub \
-        --output /path/to/output/teacher_data.jsonl
+        --input data/raw/OpenSubtitles.ja-ko.ko \
+        --output data/teacher/OpenSubtitles.ja-ko.ja
 
     # サンプル数指定
     python generate_qwen72b_awq.py \
-        --input /path/to/aihub \
-        --output output.jsonl \
+        --input data/raw/OpenSubtitles.ja-ko.ko \
+        --output data/teacher/OpenSubtitles.ja-ko.ja \
         --limit 100000
 
     # 再開（前回の続きから）
     python generate_qwen72b_awq.py \
-        --input /path/to/aihub \
-        --output output.jsonl \
+        --input data/raw/OpenSubtitles.ja-ko.ko \
+        --output data/teacher/OpenSubtitles.ja-ko.ja \
         --resume
 
 必要環境:
@@ -184,19 +184,19 @@ def main():
         epilog="""
 例:
     # 基本実行
-    python generate_qwen72b_awq.py -i data/aihub -o output/teacher.jsonl
+    python generate_qwen72b_awq.py -i data/raw/OpenSubtitles.ja-ko.ko -o data/teacher/OpenSubtitles.ja-ko.ja
     
     # 10万件のみ生成
-    python generate_qwen72b_awq.py -i data/aihub -o output/teacher.jsonl -n 100000
+    python generate_qwen72b_awq.py -i data/raw/OpenSubtitles.ja-ko.ko -o data/teacher/OpenSubtitles.ja-ko.ja -n 100000
     
     # 中断後の再開
-    python generate_qwen72b_awq.py -i data/aihub -o output/teacher.jsonl --resume
+    python generate_qwen72b_awq.py -i data/raw/OpenSubtitles.ja-ko.ko -o data/teacher/OpenSubtitles.ja-ko.ja --resume
 """
     )
     parser.add_argument("--input", "-i", type=str, required=True,
                         help="入力データパス（ディレクトリ or ファイル）")
     parser.add_argument("--output", "-o", type=str, required=True,
-                        help="出力ファイルパス (.jsonl)")
+                        help="出力ファイルパス (.ja)")
     parser.add_argument("--limit", "-n", type=int, default=None,
                         help="最大サンプル数")
     parser.add_argument("--batch-size", "-b", type=int, default=128,
@@ -303,15 +303,9 @@ def main():
                 
                 for item, output in zip(batch_items, outputs):
                     ja_text = output.outputs[0].text.strip()
-                    
-                    result = {
-                        "ko": item["ko"],
-                        "ja": ja_text,
-                    }
-                    if "ja_ref" in item:
-                        result["ja_ref"] = item["ja_ref"]
-                    
-                    f_out.write(json.dumps(result, ensure_ascii=False) + "\n")
+                    # 改行を除去（字幕は1行）
+                    ja_text = ja_text.replace("\n", " ").strip()
+                    f_out.write(ja_text + "\n")
                     processed += 1
                 
                 pbar.update(len(batch))
@@ -335,15 +329,9 @@ def main():
             
             for item, output in zip(batch_items, outputs):
                 ja_text = output.outputs[0].text.strip()
-                
-                result = {
-                    "ko": item["ko"],
-                    "ja": ja_text,
-                }
-                if "ja_ref" in item:
-                    result["ja_ref"] = item["ja_ref"]
-                
-                f_out.write(json.dumps(result, ensure_ascii=False) + "\n")
+                # 改行を除去（字幕は1行）
+                ja_text = ja_text.replace("\n", " ").strip()
+                f_out.write(ja_text + "\n")
                 processed += 1
             
             pbar.update(len(batch))
