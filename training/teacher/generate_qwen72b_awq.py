@@ -130,7 +130,7 @@ def load_source_data(input_path: Path, limit: int = None) -> Generator[dict, Non
                 yield item
                 count += 1
     
-    elif input_path.suffix == ".txt":
+    elif input_path.suffix in (".txt", ".ko"):
         with open(input_path, "r", encoding="utf-8") as f:
             for line in f:
                 if limit and count >= limit:
