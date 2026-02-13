@@ -33,19 +33,44 @@ except ImportError:
 
 # === 設定 ===
 MODEL_ID = "Qwen/Qwen2.5-72B-Instruct-AWQ"
-DATA_FILE = Path(__file__).parent / "data" / "ko_ja_100.jsonl"
+DATA_FILE = Path(__file__).parent / "data" / "aihub"  # AI Hub directory
 OUTPUT_FILE = Path(__file__).parent / "results" / "qwen72b_awq_results.json"
 
-SYSTEM_PROMPT = """あなたは韓国語から日本語への翻訳者です。
-入力された韓国語を自然な日本語に翻訳してください。
-翻訳のみを出力し、説明や補足は一切加えないでください。
-通貨や単位は変換せず、そのまま維持してください。
-日本語のみで出力してください（中国語を混ぜないでください）。"""
+SYSTEM_PROMPT = """あなたは韓国語から日本語への専門翻訳者です。
+
+【翻訳方針】
+- 韓国語の意味とニュアンスを正確に伝える自然な日本語に翻訳してください
+- 文化的な背景を考慮し、日本人に違和感なく伝わる表現を心がけてください
+- 敬語・タメ口のレベルは原文に合わせてください
+
+【厳守事項】
+- 翻訳文のみを出力（説明・補足は不要）
+- 通貨・単位はそのまま維持（ウォン→円への変換禁止）
+- 固有名詞は原音に近いカタカナ表記
+- 日本語のみで出力（中国語混入禁止）"""
 
 
 def load_data(filepath: Path, max_samples: int = 100) -> list[dict]:
-    """テストデータを読み込む"""
+    """テストデータを読み込む（jsonl or txt pair対応）"""
     data = []
+    
+    # Check if it's a directory with txt files (AI Hub format)
+    if filepath.is_dir():
+        ko_file = filepath / "ko_reference.txt"
+        ja_file = filepath / "ja_source.txt"
+        if ko_file.exists() and ja_file.exists():
+            with open(ko_file, "r", encoding="utf-8") as f_ko, \
+                 open(ja_file, "r", encoding="utf-8") as f_ja:
+                for i, (ko_line, ja_line) in enumerate(zip(f_ko, f_ja)):
+                    if i >= max_samples:
+                        break
+                    data.append({
+                        "ko": ko_line.strip(),
+                        "ja_ref": ja_line.strip(),
+                    })
+            return data
+    
+    # jsonl format
     with open(filepath, "r", encoding="utf-8") as f:
         for i, line in enumerate(f):
             if i >= max_samples:
@@ -170,6 +195,14 @@ def main():
         print(f"  HYP: {hypotheses[i]}")
         print()
 
+    # 代表サンプル3文を選択（短文・中文・長文）
+    samples_by_len = sorted(enumerate(data), key=lambda x: len(x[1]["ko"]))
+    representative = [
+        samples_by_len[len(samples_by_len) // 4][0],      # 短め
+        samples_by_len[len(samples_by_len) // 2][0],      # 中間
+        samples_by_len[3 * len(samples_by_len) // 4][0],  # 長め
+    ]
+
     # 結果保存
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     results = {
@@ -203,14 +236,6 @@ def main():
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
     print(f"💾 結果保存: {OUTPUT_FILE}")
-
-    # 代表サンプル3文を選択（短文・中文・長文）
-    samples_by_len = sorted(enumerate(data), key=lambda x: len(x[1]["ko"]))
-    representative = [
-        samples_by_len[len(samples_by_len) // 4][0],      # 短め
-        samples_by_len[len(samples_by_len) // 2][0],      # 中間
-        samples_by_len[3 * len(samples_by_len) // 4][0],  # 長め
-    ]
 
     # サマリー
     print()
