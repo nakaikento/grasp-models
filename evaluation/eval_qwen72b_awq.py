@@ -180,6 +180,15 @@ def main():
             "translate_time_sec": round(translate_time, 1),
             "speed_samples_per_sec": round(speed, 2),
         },
+        "representative_samples": [
+            {
+                "type": label,
+                "ko": data[idx]["ko"],
+                "ja_ref": data[idx]["ja_ref"],
+                "ja_hyp": hypotheses[idx],
+            }
+            for label, idx in zip(["short", "medium", "long"], representative)
+        ],
         "translations": [
             {
                 "ko": data[i]["ko"],
@@ -194,6 +203,14 @@ def main():
         json.dump(results, f, ensure_ascii=False, indent=2)
     print(f"💾 結果保存: {OUTPUT_FILE}")
 
+    # 代表サンプル3文を選択（短文・中文・長文）
+    samples_by_len = sorted(enumerate(data), key=lambda x: len(x[1]["ko"]))
+    representative = [
+        samples_by_len[len(samples_by_len) // 4][0],      # 短め
+        samples_by_len[len(samples_by_len) // 2][0],      # 中間
+        samples_by_len[3 * len(samples_by_len) // 4][0],  # 長め
+    ]
+
     # サマリー
     print()
     print("=" * 60)
@@ -205,6 +222,14 @@ def main():
     print(f"BLEU:       {metrics['bleu']}")
     print(f"処理時間:   {translate_time:.1f}秒")
     print(f"速度:       {speed:.2f} samples/s")
+    print()
+    print("📝 代表サンプル (短/中/長):")
+    print("-" * 60)
+    for idx in representative:
+        print(f"KO:  {data[idx]['ko']}")
+        print(f"REF: {data[idx]['ja_ref']}")
+        print(f"HYP: {hypotheses[idx]}")
+        print()
     print("=" * 60)
 
 
