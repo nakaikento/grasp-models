@@ -1,6 +1,6 @@
 {
   "activation_dropout": 0.1,
-  "activation_function": "gelu",
+  "activation_function": "swish",
   "architectures": [
     "MarianMTModel"
   ],
@@ -10,7 +10,7 @@
   "decoder_ffn_dim": 2048,
   "decoder_layerdrop": 0.0,
   "decoder_layers": 6,
-  "decoder_start_token_id": 2,
+  "decoder_start_token_id": 0,
   "decoder_vocab_size": 32000,
   "dropout": 0.1,
   "dtype": "float32",
@@ -28,7 +28,7 @@
   "pad_token_id": 0,
   "scale_embedding": false,
   "share_encoder_decoder_embeddings": true,
-  "static_position_embeddings": false,
+  "static_position_embeddings": true,
   "transformers_version": "4.57.6",
   "use_cache": true,
   "vocab_size": 32000
