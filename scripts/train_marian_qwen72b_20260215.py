@@ -38,9 +38,9 @@ import evaluate
 # ========== 設定 ==========
 
 # データパス
-DATA_DIR = Path("data/splits_v2")
+DATA_DIR = Path("data/splits_qwen72b_20260215")
 TOKENIZER_PATH = "data/tokenized/spm.model"
-OUTPUT_DIR = Path("models/ko-ja-v2")
+OUTPUT_DIR = Path("models/marian-ko-ja-qwen72b-20260215")
 
 # モデル設定（前回と同じ）
 MODEL_CONFIG = {

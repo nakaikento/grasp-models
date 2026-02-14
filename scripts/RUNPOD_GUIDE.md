@@ -1,27 +1,20 @@
-# RunPod MarianMT学習ガイド v2
+# RunPod MarianMT学習ガイド (2026-02-15)
+
+## 命名規則
+- **データ**: `splits_{教師モデル}_{日付}/`
+- **スクリプト**: `train_{学習モデル}_{教師}_{日付}.py`
+- **出力モデル**: `models/{学習モデル}-{方向}-{教師}-{日付}/`
+
+## 今回の学習
+- **データ**: `data/splits_qwen72b_20260215/`
+- **スクリプト**: `scripts/train_marian_qwen72b_20260215.py`
+- **出力**: `models/marian-ko-ja-qwen72b-20260215/`
 
 ## 改善点（昨日の反省）
 - ✅ データ汚染除去（FAILED_TRANSLATION、メタテキスト）
 - ✅ chrF++評価追加
 - ✅ より頻繁な評価（2000ステップ毎）
 - ✅ L4最適化（バッチ64、勾配累積2）
-
-## 事前準備（NUCで実行）
-
-```bash
-cd ~/.openclaw/workspace/grasp-models
-
-# 1. クリーニング実行
-python scripts/clean_and_prepare.py
-
-# 2. データ確認
-wc -l data/splits_v2/*.ko data/splits_v2/*.ja
-
-# 3. コミット&プッシュ
-git add data/splits_v2/ scripts/
-git commit -m "Add cleaned data v2 and training scripts"
-git push
-```
 
 ## RunPodセットアップ
 
@@ -46,7 +39,7 @@ python -c "import torch; print(f'GPU: {torch.cuda.get_device_name(0)}')"
 ### 3. 学習実行
 ```bash
 # 学習開始
-python scripts/train_v2.py
+python scripts/train_marian_qwen72b_20260215.py
 
 # 予想時間: L4で約2-3時間（5エポック）
 ```
@@ -54,48 +47,48 @@ python scripts/train_v2.py
 ### 4. チェックポイント確認
 ```bash
 # 学習中の確認
-ls -la models/ko-ja-v2/
+ls -la models/marian-ko-ja-qwen72b-20260215/
 
 # 途中経過確認
-tail -f models/ko-ja-v2/trainer_state.json
+cat models/marian-ko-ja-qwen72b-20260215/trainer_state.json | jq '.best_metric'
 ```
 
 ## 学習完了後
 
 ### ONNX変換
 ```bash
-python training/convert_to_onnx.py --model-dir models/ko-ja-v2
+python scripts/convert_to_onnx.py --model-dir models/marian-ko-ja-qwen72b-20260215
 
-# 出力: models/ko-ja-v2/encoder.onnx, decoder.onnx
+# 出力: encoder.onnx, decoder.onnx
 ```
 
 ### INT8量子化
 ```bash
-python training/quantize_onnx.py --model-dir models/ko-ja-v2
+python scripts/quantize_onnx.py --model-dir models/marian-ko-ja-qwen72b-20260215
 
-# 出力: models/ko-ja-v2-int8/
+# 出力: models/marian-ko-ja-qwen72b-20260215-int8/
 ```
 
 ### GitHubにプッシュ
 ```bash
-git add models/ko-ja-v2/
-git commit -m "MarianMT ko-ja v2 trained model"
+git add models/marian-ko-ja-qwen72b-20260215/
+git commit -m "MarianMT ko-ja trained with Qwen72B teacher (2026-02-15)"
 git push
 ```
 
 ## 期待される結果
 
-| 指標 | v1（昨日） | v2（目標） |
-|------|-----------|-----------|
+| 指標 | 昨日 (2/14) | 今回目標 |
+|------|------------|---------|
 | Test BLEU | 38.51 | > 40 |
-| Test chrF++ | - | > 50 |
+| Test chrF++ | N/A | > 50 |
 | データ汚染 | 16,000件 | 0件 |
 
 ## トラブルシューティング
 
 ### OOM (Out of Memory)
 ```python
-# train_v2.py の TRAIN_CONFIG を調整
+# スクリプトの TRAIN_CONFIG を調整
 "per_device_train_batch_size": 32,  # 64 → 32
 "gradient_accumulation_steps": 4,   # 2 → 4
 ```
@@ -104,7 +97,5 @@ git push
 ```bash
 # DataLoaderワーカー数を確認
 python -c "import os; print(os.cpu_count())"
-
-# 必要に応じて調整
-# train_v2.py: "dataloader_num_workers": 2
+# 必要に応じてスクリプト内で調整
 ```
